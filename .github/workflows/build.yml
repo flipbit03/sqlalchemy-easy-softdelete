@@ -1,0 +1,25 @@
+name: Build
+
+on:
+  push:
+    branches: [ master, main, initial_setup ]
+  pull_request:
+    branches: [ master, main, initial_setup ]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-20.04
+    # Steps represent a sequence of tasks that will be executed as part of the job
+    steps:
+      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
+      - uses: actions/checkout@v3
+      - name: Build Docker image
+        run: |
+          docker compose build tests-with-coverage --quiet
+      - name: Run Tests via Docker
+        run: |
+          docker compose up --exit-code-from tests-with-coverage tests-with-coverage
+      - name: Show Test Logs if tests failed
+        if: ${{ failure() }}
+        run: docker compose logs

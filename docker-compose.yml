@@ -1,0 +1,18 @@
+services:
+  ##############################
+  # Test Runner
+  ##############################
+  tests:
+    environment:
+      - PYTHONUNBUFFERED=1
+    build:
+      target: "testing_and_coverage"
+
+  ##############################
+  # Test Runner exporting Coverage information (for Github Actions)
+  ##############################
+  tests-with-coverage:
+    extends: "tests"
+    # Set up volume so that coverage information can be relayed back to the outside
+    volumes:
+      - "./:/library"
