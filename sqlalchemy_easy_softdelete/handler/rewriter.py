@@ -1,6 +1,6 @@
 from sqlalchemy import Table
 from sqlalchemy.orm.util import _ORMJoin
-from sqlalchemy.sql import Alias, Select, TableClause
+from sqlalchemy.sql import Alias, Join, Select, TableClause
 
 
 def rewrite_from_table(stmt: Select, table: Table, deleted_field_name: str) -> Select:
@@ -15,12 +15,14 @@ def rewrite_from_table(stmt: Select, table: Table, deleted_field_name: str) -> S
     return stmt
 
 
-def analyze_from(stmt: Select, from_obj: Table | _ORMJoin, deleted_field_name: str) -> Select:
+def analyze_from(
+    stmt: Select, from_obj: Table | _ORMJoin | Join | Alias | TableClause, deleted_field_name: str
+) -> Select:
     if isinstance(from_obj, Table):
         return rewrite_from_table(stmt, from_obj, deleted_field_name)
 
-    if isinstance(from_obj, _ORMJoin):
-        # _ORMJOIN contains information about two tables: 'left' and 'right'. Check both.
+    if isinstance(from_obj, _ORMJoin) or isinstance(from_obj, Join):
+        # _ORMJOIN/Join contains information about two tables: 'left' and 'right'. Check both.
         left_adapted_stmt = rewrite_from_table(stmt, from_obj.left, deleted_field_name)
         right_adapted_stmt = rewrite_from_table(left_adapted_stmt, from_obj.right, deleted_field_name)
         return right_adapted_stmt
