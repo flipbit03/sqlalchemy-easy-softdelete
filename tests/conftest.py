@@ -5,7 +5,7 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
-from tests.model import SDChild, SDParent, TestModelBase
+from tests.model import SDChild, SDDerivedRequest, SDParent, TestModelBase
 
 test_db_url = 'sqlite://'  # use in-memory database for tests
 
@@ -27,7 +27,7 @@ def session(session_factory) -> Session:
     return session_factory()
 
 
-def generate_object_hierarchy(
+def generate_parent_child_object_hierarchy(
     s: Session, parent_id: int, min_children: int = 1, max_children: int = 3, parent_deleted: bool = False
 ):
     # Fix a seed in the RNG for deterministic outputs
@@ -60,10 +60,20 @@ def generate_object_hierarchy(
     s.commit()
 
 
+def generate_table_with_inheritance_obj(s: Session, obj_id: int, deleted: bool = False):
+    deleted_at = datetime.datetime.utcnow() if deleted else None
+    new_parent = SDDerivedRequest(id=obj_id, deleted_at=deleted_at)
+    s.add(new_parent)
+    s.commit()
+
+
 @pytest.fixture(scope="function")
 def seeded_session(session) -> Session:
-    generate_object_hierarchy(session, 0)
-    generate_object_hierarchy(session, 1)
-    generate_object_hierarchy(session, 2, parent_deleted=True)
+    generate_parent_child_object_hierarchy(session, 0)
+    generate_parent_child_object_hierarchy(session, 1)
+    generate_parent_child_object_hierarchy(session, 2, parent_deleted=True)
 
+    generate_table_with_inheritance_obj(session, 0, deleted=False)
+    generate_table_with_inheritance_obj(session, 1, deleted=False)
+    generate_table_with_inheritance_obj(session, 2, deleted=True)
     return session

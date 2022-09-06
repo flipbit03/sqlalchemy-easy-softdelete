@@ -14,6 +14,17 @@ snapshots['test_ensure_multiple_table_deletion_works 1'] = [
     GenericRepr('<SDChild id=1000 deleted=False    (parent_id=1)>'),
 ]
 
+snapshots['test_ensure_table_with_inheritance_works 1'] = [
+    GenericRepr('<SDDerivedRequest id=0>'),
+    GenericRepr('<SDDerivedRequest id=1>'),
+]
+
+snapshots['test_ensure_table_with_inheritance_works 2'] = [
+    GenericRepr('<SDDerivedRequest id=0>'),
+    GenericRepr('<SDDerivedRequest id=1>'),
+    GenericRepr('<SDDerivedRequest id=2>'),
+]
+
 snapshots['test_query_single_table 1'] = [
     GenericRepr('<SDChild id=0 deleted=False       (parent_id=0)>'),
     GenericRepr('<SDChild id=1 deleted=False       (parent_id=0)>'),
