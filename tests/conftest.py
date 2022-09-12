@@ -5,6 +5,7 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
+from sqlalchemy_easy_softdelete.handler.rewriter import SoftDeleteQueryRewriter
 from tests.model import SDChild, SDDerivedRequest, SDParent, TestModelBase
 
 test_db_url = 'sqlite://'  # use in-memory database for tests
@@ -77,3 +78,8 @@ def seeded_session(session) -> Session:
     generate_table_with_inheritance_obj(session, 1, deleted=False)
     generate_table_with_inheritance_obj(session, 2, deleted=True)
     return session
+
+
+@pytest.fixture
+def rewriter() -> SoftDeleteQueryRewriter:
+    return SoftDeleteQueryRewriter("deleted_at", "include_deleted")
