@@ -56,6 +56,8 @@ class SDBaseRequest(
 class SDDerivedRequest(SDBaseRequest):
     id: Integer = Column(Integer, ForeignKey("sdbaserequest.id"), primary_key=True)
 
+    int_field = Column(Integer)
+
     __mapper_args__ = {
         "polymorphic_identity": "sdderivedrequest",
     }

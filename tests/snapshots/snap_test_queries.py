@@ -13,7 +13,7 @@ WHERE sdchild.deleted_at IS NULL AND sdparent.deleted_at IS NULL'''
 
 snapshots['test_ensure_aggregate_from_multiple_table_deletion_works_active_object_count 2'] = 1
 
-snapshots['test_ensure_table_with_inheritance_works 1'] = '''SELECT sdderivedrequest.id, sdbaserequest.id AS id_1, sdbaserequest.deleted_at, sdbaserequest.request_type 
+snapshots['test_ensure_table_with_inheritance_works 1'] = '''SELECT sdderivedrequest.id, sdbaserequest.id AS id_1, sdbaserequest.deleted_at, sdbaserequest.request_type, sdderivedrequest.int_field 
 FROM sdbaserequest JOIN sdderivedrequest ON sdbaserequest.id = sdderivedrequest.id 
 WHERE sdbaserequest.deleted_at IS NULL'''
 
