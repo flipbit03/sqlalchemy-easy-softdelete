@@ -1,3 +1,5 @@
+"""Functions related to dynamic generation of the soft-delete mixin."""
+
 from datetime import datetime
 from typing import Any, Callable, Optional, Type
 
@@ -18,6 +20,7 @@ def generate_soft_delete_mixin_class(
     generate_undelete_method: bool = True,
     undelete_method_name: str = "undelete",
 ) -> Type:
+    """Generate the actual soft-delete Mixin class."""
     class_attributes = {deleted_field_name: Column(deleted_field_name, deleted_field_type)}
 
     if generate_delete_method:

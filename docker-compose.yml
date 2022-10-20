@@ -3,6 +3,10 @@ services:
   # Test Runner
   ##############################
   tests:
+    depends_on:
+      - pg
+    env_file:
+      - .env.docker
     environment:
       - PYTHONUNBUFFERED=1
     build:
@@ -13,6 +17,28 @@ services:
   ##############################
   tests-with-coverage:
     extends: "tests"
+
     # Set up volume so that coverage information can be relayed back to the outside
     volumes:
       - "./:/library"
+
+  ##############################
+  # PostgreSQL Instance
+  ##############################
+  pg:
+    image: postgres:14
+    volumes:
+      - pg_db_data:/var/lib/postgresql/data
+    ports:
+      - "9991:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: test_db
+    logging:
+      options:
+        max-size: "1m"
+
+
+volumes:
+  pg_db_data:

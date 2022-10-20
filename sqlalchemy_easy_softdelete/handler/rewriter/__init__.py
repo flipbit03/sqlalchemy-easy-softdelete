@@ -1,3 +1,5 @@
+"""Main query rewriter logic."""
+
 from typing import TypeVar, Union
 
 from sqlalchemy import Table
@@ -10,21 +12,42 @@ Statement = TypeVar('Statement', bound=Union[Select, FromStatement])
 
 
 class SoftDeleteQueryRewriter:
+    """Rewrites SQL statements based on configuration."""
+
     def __init__(self, deleted_field_name: str, disable_soft_delete_option_name: str):
+        """
+        Instantiate a new query rewriter.
+
+        Params:
+
+        deleted_field_name:
+            The name of the field that should be present in a table for soft-deletion
+            rewriting to occur
+
+        disable_soft_delete_option_name:
+            Execution option name (to use with .execution_options(xxxx=True) to disable
+            soft deletion rewriting in a query
+
+        """
         self.deleted_field_name = deleted_field_name
         self.disable_soft_delete_option_name = disable_soft_delete_option_name
 
     def rewrite_statement(self, stmt: Statement) -> Statement:
+        """Rewrite a single SQL-like Statement."""
         if isinstance(stmt, Select):
             return self.rewrite_select(stmt)
 
         if isinstance(stmt, FromStatement):
+            # Explicitly protect against INSERT with RETURNING
+            if not isinstance(stmt.element, Select):
+                return stmt
             stmt.element = self.rewrite_select(stmt.element)
             return stmt
 
         raise NotImplementedError(f"Unsupported statement type \"{(type(stmt))}\"!")
 
     def rewrite_select(self, stmt: Select) -> Select:
+        """Rewrite a Select Statement."""
         # if the user tagged this query with an execution_option to disable soft-delete filtering
         # simply return back the same stmt
         if stmt.get_execution_options().get(self.disable_soft_delete_option_name):
@@ -36,6 +59,7 @@ class SoftDeleteQueryRewriter:
         return stmt
 
     def rewrite_compound_select(self, stmt: CompoundSelect) -> CompoundSelect:
+        """Rewrite a Compound Select Statement."""
         # This needs to be done by array slice referencing instead of
         # a direct reassignment because the reassignment would not substitute the
         # value which is inside the CompoundSelect "by reference"
@@ -44,6 +68,7 @@ class SoftDeleteQueryRewriter:
         return stmt
 
     def rewrite_element(self, subquery: Subquery) -> Subquery:
+        """Rewrite an object with a `.element` attribute and patch the query inside it."""
         if isinstance(subquery.element, CompoundSelect):
             subquery.element = self.rewrite_compound_select(subquery.element)
             return subquery
@@ -55,6 +80,7 @@ class SoftDeleteQueryRewriter:
         raise NotImplementedError(f"Unsupported object \"{(type(subquery.element))}\" in subquery.element")
 
     def analyze_from(self, stmt: Select, from_obj):
+        """Analyze the FROMS of a Select to determine possible soft-delete rewritable tables."""
         if isinstance(from_obj, Table):
             return self.rewrite_from_table(stmt, from_obj)
 
@@ -85,6 +111,7 @@ class SoftDeleteQueryRewriter:
         raise NotImplementedError(f"Unsupported object \"{(type(from_obj))}\" in statement.froms")
 
     def rewrite_from_table(self, stmt: Select, table: Table) -> Select:
+        """(possibly) Rewrite a Select based on whether the Table contains the soft-delete field or not."""
         column_obj = table.columns.get(self.deleted_field_name)
 
         # Caveat: The automatic "bool(column_obj)" conversion actually returns

@@ -1,11 +1,7 @@
 sources = sqlalchemy_easy_softdelete
 
 .PHONY: test format lint unittest coverage pre-commit clean
-test: format lint unittest
-
-format:
-	isort $(sources) tests
-	black $(sources) tests
+test: lint unittest
 
 lint:
 	flake8 $(sources) tests

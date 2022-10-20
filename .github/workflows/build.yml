@@ -2,7 +2,7 @@ name: Build
 
 on:
   push:
-    branches: [ main, dev/* ]
+    branches: [ main, '*' ]
   pull_request:
     branches: [ main ]
   workflow_dispatch:
@@ -19,7 +19,7 @@ jobs:
           docker compose build tests-with-coverage --no-cache
       - name: Run Tests via Docker
         run: |
-          docker compose up --exit-code-from tests-with-coverage tests-with-coverage
+          docker compose --env-file .env.docker run tests-with-coverage
       - name: Show Test Logs if tests failed
         if: ${{ failure() }}
         run: docker compose logs
