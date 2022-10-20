@@ -19,7 +19,7 @@ jobs:
           docker compose build tests-with-coverage --quiet
       - name: Run Tests via Docker
         run: |
-          docker compose --env-file .env.docker run tests-with-coverage
+          docker compose --env-file .env.docker run --quiet-pull tests-with-coverage
       - name: Show Test Logs if tests failed
         if: ${{ failure() }}
         run: docker compose logs
