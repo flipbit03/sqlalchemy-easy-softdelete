@@ -26,4 +26,4 @@ RUN poetry install -E test
 
 FROM content as testing_and_coverage
 
-CMD poetry run pytest --cov=sqlalchemy_easy_softdelete --cov-branch --cov-report=term-missing --cov-report=xml tests
+CMD sleep 2 && poetry run pytest --cov=sqlalchemy_easy_softdelete --cov-branch --cov-report=term-missing --cov-report=xml tests

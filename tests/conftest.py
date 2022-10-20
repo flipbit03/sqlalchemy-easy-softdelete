@@ -1,83 +1,52 @@
-import datetime
-import random
+import os
 
 import pytest
 from sqlalchemy import create_engine
+from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from sqlalchemy_easy_softdelete.handler.rewriter import SoftDeleteQueryRewriter
-from tests.model import SDChild, SDDerivedRequest, SDParent, TestModelBase
+from tests.model import TestModelBase
+from tests.seed_data import generate_parent_child_object_hierarchy, generate_table_with_inheritance_obj
 
-test_db_url = 'sqlite://'  # use in-memory database for tests
-
-
-@pytest.fixture(scope="function")
-def session_factory():
-    engine = create_engine(test_db_url)
-    TestModelBase.metadata.create_all(engine)
-
-    yield sessionmaker(bind=engine)
-
-    # SQLite in-memory db is deleted when its connection is closed.
-    # https://www.sqlite.org/inmemorydb.html
-    engine.dispose()
+test_db_url = os.environ.get("TEST_CONNECTION_STRING", "sqlite://")
 
 
-@pytest.fixture(scope="function")
-def session(session_factory) -> Session:
-    return session_factory()
+@pytest.fixture
+def db_engine() -> Engine:
+    return create_engine(test_db_url)
 
 
-def generate_parent_child_object_hierarchy(
-    s: Session, parent_id: int, min_children: int = 1, max_children: int = 3, parent_deleted: bool = False
-):
-    # Fix a seed in the RNG for deterministic outputs
-    random.seed(parent_id)
+@pytest.fixture
+def db_connection(db_engine) -> Connection:
+    connection = db_engine.connect()
 
-    # Generate the Parent
-    deleted_at = datetime.datetime.utcnow() if parent_deleted else None
-    new_parent = SDParent(id=parent_id, deleted_at=deleted_at)
-    s.add(new_parent)
-    s.flush()
+    # start a transaction
+    transaction = connection.begin()
 
-    active_children = random.randint(min_children, max_children)
-
-    # Add some active children
-    for active_id in range(active_children):
-        new_child = SDChild(id=parent_id * 1000 + active_id, parent=new_parent)
-        s.add(new_child)
-        s.flush()
-
-    # Add some soft-deleted children
-    for inactive_id in range(random.randint(min_children, max_children)):
-        new_soft_deleted_child = SDChild(
-            id=parent_id * 1000 + active_children + inactive_id,
-            parent=new_parent,
-            deleted_at=datetime.datetime.utcnow(),
-        )
-        s.add(new_soft_deleted_child)
-        s.flush()
-
-    s.commit()
+    try:
+        yield connection
+    finally:
+        transaction.rollback()
+    connection.close()
 
 
-def generate_table_with_inheritance_obj(s: Session, obj_id: int, deleted: bool = False):
-    deleted_at = datetime.datetime.utcnow() if deleted else None
-    new_parent = SDDerivedRequest(id=obj_id, deleted_at=deleted_at)
-    s.add(new_parent)
-    s.commit()
+@pytest.fixture
+def db_session(db_connection) -> Session:
+    TestModelBase.metadata.create_all(db_connection)
+    return sessionmaker(autocommit=False, autoflush=False, bind=db_connection)()
 
 
-@pytest.fixture(scope="function")
-def seeded_session(session) -> Session:
-    generate_parent_child_object_hierarchy(session, 0)
-    generate_parent_child_object_hierarchy(session, 1)
-    generate_parent_child_object_hierarchy(session, 2, parent_deleted=True)
+@pytest.fixture
+def seeded_session(db_session) -> Session:
+    generate_parent_child_object_hierarchy(db_session, 1000)
+    generate_parent_child_object_hierarchy(db_session, 1001)
+    generate_parent_child_object_hierarchy(db_session, 1002, parent_deleted=True)
 
-    generate_table_with_inheritance_obj(session, 0, deleted=False)
-    generate_table_with_inheritance_obj(session, 1, deleted=False)
-    generate_table_with_inheritance_obj(session, 2, deleted=True)
-    return session
+    generate_table_with_inheritance_obj(db_session, 1000, deleted=False)
+    generate_table_with_inheritance_obj(db_session, 1001, deleted=False)
+    generate_table_with_inheritance_obj(db_session, 1002, deleted=True)
+    return db_session
 
 
 @pytest.fixture
