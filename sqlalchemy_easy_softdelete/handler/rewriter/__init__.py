@@ -1,13 +1,28 @@
+from typing import TypeVar, Union
+
 from sqlalchemy import Table
+from sqlalchemy.orm import FromStatement
 from sqlalchemy.orm.util import _ORMJoin
 from sqlalchemy.sql import Alias, CompoundSelect, Join, Select, Subquery, TableClause
 from sqlalchemy.sql.elements import TextClause
+
+Statement = TypeVar('Statement', bound=Union[Select, FromStatement])
 
 
 class SoftDeleteQueryRewriter:
     def __init__(self, deleted_field_name: str, disable_soft_delete_option_name: str):
         self.deleted_field_name = deleted_field_name
         self.disable_soft_delete_option_name = disable_soft_delete_option_name
+
+    def rewrite_statement(self, stmt: Statement) -> Statement:
+        if isinstance(stmt, Select):
+            return self.rewrite_select(stmt)
+
+        if isinstance(stmt, FromStatement):
+            stmt.element = self.rewrite_select(stmt.element)
+            return stmt
+
+        raise NotImplementedError(f"Unsupported statement type \"{(type(stmt))}\"!")
 
     def rewrite_select(self, stmt: Select) -> Select:
         # if the user tagged this query with an execution_option to disable soft-delete filtering
@@ -28,7 +43,7 @@ class SoftDeleteQueryRewriter:
             stmt.selects[i] = self.rewrite_select(stmt.selects[i])
         return stmt
 
-    def rewrite_subquery(self, subquery: Subquery) -> Subquery:
+    def rewrite_element(self, subquery: Subquery) -> Subquery:
         if isinstance(subquery.element, CompoundSelect):
             subquery.element = self.rewrite_compound_select(subquery.element)
             return subquery
@@ -50,7 +65,7 @@ class SoftDeleteQueryRewriter:
             return right_adapted_stmt
 
         if isinstance(from_obj, Subquery):
-            self.rewrite_subquery(from_obj)
+            self.rewrite_element(from_obj)
             return stmt
 
         if isinstance(from_obj, TableClause) or isinstance(from_obj, TextClause):
@@ -60,7 +75,7 @@ class SoftDeleteQueryRewriter:
 
         if isinstance(from_obj, Alias):
             if isinstance(from_obj.element, Subquery):
-                self.rewrite_subquery(from_obj.element)
+                self.rewrite_element(from_obj.element)
                 return stmt
 
             raise NotImplementedError(

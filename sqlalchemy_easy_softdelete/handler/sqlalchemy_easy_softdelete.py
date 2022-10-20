@@ -14,7 +14,7 @@ def activate_soft_delete_hook(deleted_field_name: str, disable_soft_delete_optio
         if not state.is_select:
             return
 
-        adapted = SoftDeleteQueryRewriter(deleted_field_name, disable_soft_delete_option_name).rewrite_select(
+        adapted = SoftDeleteQueryRewriter(deleted_field_name, disable_soft_delete_option_name).rewrite_statement(
             state.statement
         )
         state.statement = adapted

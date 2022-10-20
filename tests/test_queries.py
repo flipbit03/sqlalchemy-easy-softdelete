@@ -5,7 +5,7 @@ from sqlalchemy import func, select, table, text
 from sqlalchemy.orm import Query
 from sqlalchemy.sql import Select
 
-from tests.model import SDChild, SDDerivedRequest, SDParent
+from tests.model import SDBaseRequest, SDChild, SDDerivedRequest, SDParent
 
 
 def test_query_single_table(snapshot, seeded_session, rewriter):
@@ -78,6 +78,25 @@ def test_ensure_table_with_inheritance_works(snapshot, seeded_session, rewriter)
 
     assert len(all_active_and_deleted_derived_requests) == 3
     snapshot.assert_match(all_active_and_deleted_derived_requests)
+
+
+def test_ensure_table_with_inheritance_works_query_base(snapshot, seeded_session, rewriter):
+    """
+    Querying for a polymorphic entity *without JOIN* should work when fields contained in
+    derived entities are lazily fetched.
+    """
+
+    # Query the BASE entity, without joins.
+    test_query: Query = seeded_session.query(SDBaseRequest).filter(SDBaseRequest.request_type == 'sdderivedrequest')
+
+    request: SDDerivedRequest = test_query.first()
+
+    try:
+        # Accessing a field in a SDDerived Request will trigger an additional query with
+        # a `FromStatement` as the statement, instead of a normal Select
+        request.int_field
+    except Exception as exc:
+        assert False, f"'Exception was raised {exc}"
 
 
 def test_query_with_text_clause_as_table(snapshot, seeded_session, rewriter):
