@@ -25,7 +25,6 @@ class SoftDeleteMixin(generate_soft_delete_mixin_class()):
 
 
 class SDSimpleTable(TestModelBase, SoftDeleteMixin):
-
     int_field = Column(Integer)
 
     def __repr__(self):
@@ -43,8 +42,20 @@ class SDChild(TestModelBase, SoftDeleteMixin):
     parent_id = Column(Integer, ForeignKey(f'{SDParent.__tablename__}.id'), nullable=False)
     parent: SDParent = relationship('SDParent', back_populates="children")
 
+    child_children: 'List[SDChildChild]' = relationship('SDChildChild')
+
     def __repr__(self):
         pid = f"(parent_id={self.parent_id})"
+        left = f"{self.__class__.__name__} id={self.id} deleted={bool(self.deleted_at)}"
+        return f"<{left:30} {pid:>15}>"
+
+
+class SDChildChild(TestModelBase, SoftDeleteMixin):
+    child_id = Column(Integer, ForeignKey(f'{SDChild.__tablename__}.id'), nullable=False)
+    child: SDChild = relationship('SDChild', back_populates="child_children")
+
+    def __repr__(self):
+        pid = f"(child_id={self.child_id})"
         left = f"{self.__class__.__name__} id={self.id} deleted={bool(self.deleted_at)}"
         return f"<{left:30} {pid:>15}>"
 
