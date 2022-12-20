@@ -7,13 +7,17 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from sqlalchemy_easy_softdelete.handler.rewriter import SoftDeleteQueryRewriter
 from tests.model import TestModelBase
-from tests.seed_data import generate_parent_child_object_hierarchy, generate_table_with_inheritance_obj
+from tests.seed_data import generate_table_with_inheritance_obj
+from tests.seed_data.parent_child_childchild import generate_parent_child_object_hierarchy
 
-test_db_url = os.environ.get("TEST_CONNECTION_STRING", "sqlite://")
+env_connection_string = os.environ.get("TEST_CONNECTION_STRING", None)
+
+test_db_url = env_connection_string or "sqlite://"
 
 
 @pytest.fixture
 def db_engine() -> Engine:
+    print(f"connection_string={test_db_url}")
     return create_engine(test_db_url)
 
 

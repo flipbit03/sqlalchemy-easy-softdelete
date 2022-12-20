@@ -79,16 +79,31 @@ class SoftDeleteQueryRewriter:
 
         raise NotImplementedError(f"Unsupported object \"{(type(subquery.element))}\" in subquery.element")
 
+    def rewrite_from_orm_join(self, stmt: Select, join_obj: Union[_ORMJoin, Join]) -> Select:
+        # Recursive cases (multiple joins)
+        if isinstance(join_obj.left, _ORMJoin) or isinstance(join_obj.left, Join):
+            stmt = self.rewrite_from_orm_join(stmt, join_obj.left)
+
+        if isinstance(join_obj.right, _ORMJoin) or isinstance(join_obj.right, Join):
+            stmt = self.rewrite_from_orm_join(stmt, join_obj.right)
+
+        # Normal cases - Tables
+        if isinstance(join_obj.left, Table):
+            stmt = self.rewrite_from_table(stmt, join_obj.left)
+
+        if isinstance(join_obj.right, Table):
+            stmt = self.rewrite_from_table(stmt, join_obj.right)
+
+        return stmt
+
     def analyze_from(self, stmt: Select, from_obj):
         """Analyze the FROMS of a Select to determine possible soft-delete rewritable tables."""
         if isinstance(from_obj, Table):
             return self.rewrite_from_table(stmt, from_obj)
 
         if isinstance(from_obj, _ORMJoin) or isinstance(from_obj, Join):
-            # _ORMJOIN/Join contains information about two tables: 'left' and 'right'. Check both.
-            left_adapted_stmt = self.rewrite_from_table(stmt, from_obj.left)
-            right_adapted_stmt = self.rewrite_from_table(left_adapted_stmt, from_obj.right)
-            return right_adapted_stmt
+            # _ORMJOIN/Join contains information about two things: 'left' and 'right'. Check both.
+            return self.rewrite_from_orm_join(stmt, from_obj)
 
         if isinstance(from_obj, Subquery):
             self.rewrite_element(from_obj)

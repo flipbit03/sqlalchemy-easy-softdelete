@@ -6,7 +6,7 @@ from sqlalchemy import func, insert, select, table, text
 from sqlalchemy.orm import Query
 from sqlalchemy.sql import Select
 
-from tests.model import SDBaseRequest, SDChild, SDDerivedRequest, SDParent, SDSimpleTable
+from tests.model import SDBaseRequest, SDChild, SDChildChild, SDDerivedRequest, SDParent, SDSimpleTable
 
 
 def test_query_single_table(snapshot, seeded_session, rewriter):
@@ -132,3 +132,16 @@ def test_insert_with_returning(snapshot, seeded_session, rewriter, db_connection
     result = seeded_session.execute(insert_returning)
 
     assert list(result)[0][0].int_field == 10
+
+
+def test_query_with_more_than_one_join(snapshot, seeded_session, rewriter):
+    query = (
+        seeded_session.query(SDParent)
+        .join(SDChild)
+        .join(SDChildChild)
+        .filter(
+            SDParent.id > 0,
+        )
+    )
+
+    snapshot.assert_match(str(rewriter.rewrite_select(query.statement)))
