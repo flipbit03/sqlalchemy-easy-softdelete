@@ -9,7 +9,7 @@ from sqlalchemy_easy_softdelete.handler.rewriter import SoftDeleteQueryRewriter
 
 
 @cache
-def activate_soft_delete_hook(deleted_field_name: str, disable_soft_delete_option_name: str):
+def activate_soft_delete_hook(deleted_field_name: str, disable_soft_delete_option_name: str, is_bool_field: bool):
     """Activate an event hook to rewrite the queries."""
     # Enable Soft Delete on all Relationship Loads which implement SoftDeleteMixin
     @listens_for(Session, "do_orm_execute")
@@ -17,7 +17,7 @@ def activate_soft_delete_hook(deleted_field_name: str, disable_soft_delete_optio
         if not state.is_select:
             return
 
-        adapted = SoftDeleteQueryRewriter(deleted_field_name, disable_soft_delete_option_name).rewrite_statement(
-            state.statement
-        )
+        adapted = SoftDeleteQueryRewriter(
+            deleted_field_name, disable_soft_delete_option_name, is_bool_field
+        ).rewrite_statement(state.statement)
         state.statement = adapted

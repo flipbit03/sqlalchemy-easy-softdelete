@@ -14,7 +14,7 @@ Statement = TypeVar('Statement', bound=Union[Select, FromStatement])
 class SoftDeleteQueryRewriter:
     """Rewrites SQL statements based on configuration."""
 
-    def __init__(self, deleted_field_name: str, disable_soft_delete_option_name: str):
+    def __init__(self, deleted_field_name: str, disable_soft_delete_option_name: str, is_bool_field: bool):
         """
         Instantiate a new query rewriter.
 
@@ -31,6 +31,7 @@ class SoftDeleteQueryRewriter:
         """
         self.deleted_field_name = deleted_field_name
         self.disable_soft_delete_option_name = disable_soft_delete_option_name
+        self.is_bool_field = is_bool_field
 
     def rewrite_statement(self, stmt: Statement) -> Statement:
         """Rewrite a single SQL-like Statement."""
@@ -132,7 +133,7 @@ class SoftDeleteQueryRewriter:
         # Caveat: The automatic "bool(column_obj)" conversion actually returns
         # a truthy value of False (?), so we have to explicitly compare against None
         if column_obj is not None:
-            return stmt.filter(column_obj.is_(None))
+            return stmt.filter(column_obj.is_(False if self.is_bool_field else None))
 
         # Soft-delete argument was not found, return unchanged statement
         return stmt

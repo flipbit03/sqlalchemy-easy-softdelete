@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Any, Callable, Optional, Type
 
-from sqlalchemy import Column, DateTime
+from sqlalchemy import Column, DateTime, Boolean
 from sqlalchemy.sql.type_api import TypeEngine
 
 from sqlalchemy_easy_softdelete.handler.sqlalchemy_easy_softdelete import activate_soft_delete_hook
@@ -37,7 +37,9 @@ def generate_soft_delete_mixin_class(
 
         class_attributes[undelete_method_name] = undelete_method
 
-    activate_soft_delete_hook(deleted_field_name, disable_soft_delete_filtering_option_name)
+    activate_soft_delete_hook(
+        deleted_field_name, disable_soft_delete_filtering_option_name, isinstance(deleted_field_type, Boolean)
+    )
 
     generated_class = type(class_name, tuple(), class_attributes)
 
