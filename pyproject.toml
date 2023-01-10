@@ -22,6 +22,8 @@ packages = [
 [tool.poetry.dependencies]
 python = ">=3.10,<4.0"
 SQLAlchemy = "^1.4"
+certifi = ">=2022.12.07"
+cryptography = ">=38.0.3"
 
 black  = { version = "^21.5b2", optional = true}
 isort  = { version = "^5.8.0", optional = true}
