@@ -1,7 +1,7 @@
 [tool]
 [tool.poetry]
 name = "sqlalchemy-easy-softdelete"
-version = "0.6.1"
+version = "0.6.2"
 homepage = "https://github.com/flipbit03/sqlalchemy-easy-softdelete"
 description = "Easily add soft-deletion to your SQLAlchemy Models."
 authors = ["Cadu <cadu.coelho@gmail.com>"]
@@ -22,6 +22,8 @@ packages = [
 [tool.poetry.dependencies]
 python = ">=3.10,<4.0"
 SQLAlchemy = "^1.4"
+certifi = ">=2022.12.07"
+cryptography = ">=38.0.3"
 
 black  = { version = "^21.5b2", optional = true}
 isort  = { version = "^5.8.0", optional = true}
