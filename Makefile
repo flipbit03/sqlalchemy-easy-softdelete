@@ -1,6 +1,7 @@
 sources = sqlalchemy_easy_softdelete
 
-.PHONY: lint test coverage clean
+.PHONY: lint test coverage clean dev pg bump_patch bump_minor bump_major
+
 lint:
 	pre-commit run --all-files
 
@@ -17,6 +18,9 @@ clean:
 	rm -rf coverage.xml .coverage
 
 dev:
+	poetry install -E dev -E test
+
+pg:
 	# Start Postgres Instance
 	docker compose up -d pg
 
