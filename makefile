@@ -25,4 +25,4 @@ dev:
 	docker compose up -d pg
 
 bump_patch:
-	bump2version patch --no-tag --no-commit
+	bump2version patch --no-tag
