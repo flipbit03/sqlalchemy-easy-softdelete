@@ -32,6 +32,7 @@ class SDSimpleTable(TestModelBase, SoftDeleteMixin):
 
 
 class SDParent(TestModelBase, SoftDeleteMixin):
+    __allow_unmapped__ = True
     children: 'List[SDChild]' = relationship('SDChild')
 
     def __repr__(self):
@@ -39,6 +40,7 @@ class SDParent(TestModelBase, SoftDeleteMixin):
 
 
 class SDChild(TestModelBase, SoftDeleteMixin):
+    __allow_unmapped__ = True
     parent_id = Column(Integer, ForeignKey(f'{SDParent.__tablename__}.id'), nullable=False)
     parent: SDParent = relationship('SDParent', back_populates="children")
 
@@ -51,6 +53,8 @@ class SDChild(TestModelBase, SoftDeleteMixin):
 
 
 class SDChildChild(TestModelBase, SoftDeleteMixin):
+    __allow_unmapped__ = True
+
     child_id = Column(Integer, ForeignKey(f'{SDChild.__tablename__}.id'), nullable=False)
     child: SDChild = relationship('SDChild', back_populates="child_children")
 

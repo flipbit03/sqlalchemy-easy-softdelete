@@ -20,8 +20,8 @@ packages = [
 ]
 
 [tool.poetry.dependencies]
-python = ">=3.10,<4.0"
-SQLAlchemy = "^1.4"
+python = ">=3.9,<4.0"
+SQLAlchemy = ">=1.4,<2.1"
 certifi = ">=2022.12.07"
 cryptography = ">=38.0.3"
 
