@@ -32,6 +32,6 @@ bump_patch:
 bump_minor:
 	bump2version minor --no-tag
 
-# 0.X.0
+# X.0.0
 bump_major:
 	bump2version major --no-tag
