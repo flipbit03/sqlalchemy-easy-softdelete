@@ -7,10 +7,6 @@ lint:
 test:
 	pytest
 
-test_pg:
-	export TEST_CONNECTION_STRING=postgresql://postgres:postgres@127.0.0.1:9991/test_db
-	pytest
-
 coverage:
 	pytest --cov=$(sources) --cov-branch --cov-report=term-missing --cov-report=xml tests
 
