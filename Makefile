@@ -22,3 +22,6 @@ dev:
 
 bump_patch:
 	bump2version patch --no-tag
+
+bump_minor:
+	bump2version minor --no-tag
