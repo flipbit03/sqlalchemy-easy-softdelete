@@ -65,6 +65,12 @@ snapshots['test_query_union_sdchild 2'] = [
     GenericRepr('<SDChild id=100204 deleted=False (parent_id=1002)>')
 ]
 
+snapshots['test_query_union_sdchild_core 1'] = '''SELECT sdchild.id, sdchild.parent_id 
+FROM sdchild 
+WHERE sdchild.deleted_at IS NULL UNION SELECT sdchild.id, sdchild.parent_id 
+FROM sdchild 
+WHERE sdchild.deleted_at IS NULL'''
+
 snapshots['test_query_with_join 1'] = '''SELECT sdchild.id, sdchild.deleted_at, sdchild.parent_id 
 FROM sdchild JOIN sdparent ON sdparent.id = sdchild.parent_id 
 WHERE sdchild.deleted_at IS NULL AND sdparent.deleted_at IS NULL'''

@@ -5,10 +5,10 @@ from typing import TypeVar, Union
 from sqlalchemy import Table
 from sqlalchemy.orm import FromStatement
 from sqlalchemy.orm.util import _ORMJoin
-from sqlalchemy.sql import Alias, CompoundSelect, Join, Select, Subquery, TableClause
+from sqlalchemy.sql import Alias, CompoundSelect, Executable, Join, Select, Subquery, TableClause
 from sqlalchemy.sql.elements import TextClause
 
-Statement = TypeVar('Statement', bound=Union[Select, FromStatement])
+Statement = TypeVar('Statement', bound=Union[Select, FromStatement, CompoundSelect, Executable])
 
 
 class SoftDeleteQueryRewriter:
@@ -37,6 +37,11 @@ class SoftDeleteQueryRewriter:
         if isinstance(stmt, Select):
             return self.rewrite_select(stmt)
 
+        # Handle CompoundSelect
+        if isinstance(stmt, CompoundSelect):
+            return self.rewrite_compound_select(stmt)
+
+        # Handle FromStatement which is also a Select/Executable
         if isinstance(stmt, FromStatement):
             # Explicitly protect against INSERT with RETURNING
             if not isinstance(stmt.element, Select):
@@ -80,6 +85,8 @@ class SoftDeleteQueryRewriter:
         raise NotImplementedError(f"Unsupported object \"{(type(subquery.element))}\" in subquery.element")
 
     def rewrite_from_orm_join(self, stmt: Select, join_obj: Union[_ORMJoin, Join]) -> Select:
+        """Handle multiple, and potentially recursive joins."""
+
         # Recursive cases (multiple joins)
         if isinstance(join_obj.left, _ORMJoin) or isinstance(join_obj.left, Join):
             stmt = self.rewrite_from_orm_join(stmt, join_obj.left)

@@ -32,7 +32,7 @@ def generate_parent_child_object_hierarchy(
     # Create Children (SDChild)
     for child_no, child_deleted in enumerate(children):
         new_child_id = parent_id * 100 + child_no
-        new_child = SDChild(id=new_child_id, parent=new_parent)
+        new_child = SDChild(id=new_child_id, parent_id=new_parent.id)
         new_child.deleted_at = pseudorandom_date() if child_deleted else None
         s.add(new_child)
         s.flush()
@@ -45,7 +45,7 @@ def generate_parent_child_object_hierarchy(
 
         for child_children_no, child_children_deleted in enumerate(child_children):
             sdchild_child_id = new_child_id * 100 + child_children_no
-            new_child_child = SDChildChild(id=sdchild_child_id, child=new_child)
+            new_child_child = SDChildChild(id=sdchild_child_id, child_id=new_child.id)
             child_child_deleted = pseudorandom_date() if child_children_deleted else None
             new_child_child.deleted_at = child_child_deleted
             s.add(new_child_child)
