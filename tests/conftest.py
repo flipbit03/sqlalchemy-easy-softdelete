@@ -12,13 +12,18 @@ from tests.seed_data.parent_child_childchild import generate_parent_child_object
 
 env_connection_string = os.environ.get("TEST_CONNECTION_STRING", None)
 
-test_db_url = env_connection_string or "sqlite://"
+
+@pytest.fixture
+def sqla2_warnings() -> Engine:
+    # Enable SQLAlchemy 2.0 Warnings mode to help with 2.0 support
+    os.environ["SQLALCHEMY_WARN_20"] = "1"
 
 
 @pytest.fixture
-def db_engine() -> Engine:
+def db_engine(sqla2_warnings) -> Engine:
+    test_db_url = env_connection_string or "sqlite://"
     print(f"connection_string={test_db_url}")
-    return create_engine(test_db_url)
+    return create_engine(test_db_url, future=True)
 
 
 @pytest.fixture

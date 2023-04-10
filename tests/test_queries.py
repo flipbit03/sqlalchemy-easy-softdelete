@@ -37,7 +37,11 @@ def test_query_union_sdchild(snapshot, seeded_session, rewriter):
 
 def test_query_union_sdchild_core(snapshot, seeded_session, rewriter):
     """Two queries joined via UNION, using SQLAlchemy Core"""
-    select_as_core = select([SDChild.__table__]).union(select([SDChild.__table__]))
+    sdchild = SDChild.__table__
+
+    select_as_core = (select(sdchild.c.id, sdchild.c.parent_id).select_from(sdchild)).union(
+        select(sdchild.c.id, sdchild.c.parent_id).select_from(sdchild)
+    )
 
     snapshot.assert_match(str(rewriter.rewrite_statement(select_as_core)))
 
