@@ -23,37 +23,20 @@ packages = [
 python = ">=3.9,<4.0"
 SQLAlchemy = ">=1.4,<2.1"
 
-
-black  = { version = "^21.5b2", optional = true}
-isort  = { version = "^5.8.0", optional = true}
-flake8  = { version = "^3.9.2", optional = true}
-flake8-docstrings = { version = "^1.6.0", optional = true }
-pytest  = { version = "^6.2.4", optional = true}
-pytest-cov  = { version = "^2.12.0", optional = true}
-tox  = { version = "^3.20.1", optional = true}
-virtualenv  = { version = "^20.2.2", optional = true}
-pip  = { version = "*", optional = true}
-twine  = { version = "^3.3.0", optional = true}
-pre-commit = {version = "^2.12.0", optional = true}
-toml = {version = "^0.10.2", optional = true}
-bump2version = {version = "^1.0.1", optional = true}
-
-[tool.poetry.dev-dependencies]
-ipython = "^8.4.0"
+[tool.poetry.group.dev.dependencies]
 snapshottest = "^0.6.0"
 psycopg2 = "^2.9.4"
-
-[tool.poetry.extras]
-test = [
-    "pytest",
-    "black",
-    "isort",
-    "flake8",
-    "flake8-docstrings",
-    "pytest-cov"
-    ]
-
-dev = ["tox", "pre-commit", "virtualenv", "pip", "twine", "toml", "bump2version"]
+nox = "^2023.4.22"
+black = "^21.5b2"
+isort = "^5.8.0"
+flake8 = "^3.9.2"
+flake8-docstrings = "^1.6.0"
+pytest = "^6.2.4"
+pytest-cov = "^2.12.0"
+virtualenv = "^20.2.2"
+pre-commit = "^2.12.0"
+bump2version = "^1.0.1"
+pip = "*"
 
 [tool.black]
 line-length = 120
