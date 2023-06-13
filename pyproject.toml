@@ -24,7 +24,7 @@ python = ">=3.9,<4.0"
 SQLAlchemy = ">=1.4,<2.1"
 
 [tool.poetry.group.dev.dependencies]
-snapshottest = "^0.6.0"
+snapshottest = "*"
 psycopg2 = "^2.9.4"
 nox = "^2023.4.22"
 black = "^21.5b2"
@@ -37,6 +37,7 @@ virtualenv = "^20.2.2"
 pre-commit = "^2.12.0"
 bump2version = "^1.0.1"
 pip = "*"
+sqlparse = "^0.4.4"
 
 [tool.black]
 line-length = 120
