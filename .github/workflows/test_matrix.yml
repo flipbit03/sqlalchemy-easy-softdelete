@@ -2,7 +2,7 @@ name: Multiple Python Tests
 
 on:
   push:
-    branches: [ main, chore/implement_nox ]
+    branches: [ main ]
   pull_request:
     branches: [ main, "*" ]
   workflow_dispatch:
