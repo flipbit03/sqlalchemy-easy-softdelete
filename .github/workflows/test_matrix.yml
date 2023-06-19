@@ -1,0 +1,35 @@
+name: Multiple Python Tests
+
+on:
+  push:
+    branches: [ main, chore/implement_nox ]
+  pull_request:
+    branches: [ main, "*" ]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-20.04
+    strategy:
+      matrix:
+        python-version: [ "3.9",  "3.10", "3.11" ]
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install poetry
+          poetry install
+
+      - name: Run Tests
+        run: |
+          poetry run nox -p ${{ matrix.python-version }}
+
+      - name: Show Test Logs if tests failed
+        if: ${{ failure() }}
+        run: docker compose logs
