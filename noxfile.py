@@ -2,16 +2,9 @@ import nox
 
 
 @nox.session(python=("3.9", "3.10", "3.11"))
-def sqla2_tests(session):
-    session.install('SQLAlchemy==2.0.16')
-    session.install('pytest')
-    session.install('snapshottest')
-    session.run('pytest')
-
-
-@nox.session(python=("3.9", "3.10", "3.11"))
-def sqla14_tests(session):
-    session.install('SQLAlchemy==1.4.48')
+@nox.parametrize("sqla_version", ["2.0.16", "1.4.48"])
+def tests(session, sqla_version):
+    session.install(f'SQLAlchemy=={sqla_version}')
     session.install('pytest')
     session.install('snapshottest')
     session.run('pytest')
