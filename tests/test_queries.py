@@ -7,13 +7,25 @@ from sqlalchemy.orm import Query
 from sqlalchemy.sql import Select
 
 from tests.model import SDBaseRequest, SDChild, SDChildChild, SDDerivedRequest, SDParent, SDSimpleTable
+from tests.utils import is_filtering_for_softdeleted
 
 
 def test_query_single_table(snapshot, seeded_session, rewriter):
     """Query with one table"""
     test_query: Query = seeded_session.query(SDChild)
 
-    snapshot.assert_match(str(rewriter.rewrite_statement(test_query.statement)))
+    soft_deleted_rewritten_statement = rewriter.rewrite_statement(test_query.statement)
+
+    assert (
+        is_filtering_for_softdeleted(
+            soft_deleted_rewritten_statement,
+            {
+                SDChild.__table__,
+            },
+        )
+        is True
+    )
+
     snapshot.assert_match(sorted(test_query.all(), key=lambda i: i.id))
 
 
@@ -21,7 +33,11 @@ def test_query_with_join(snapshot, seeded_session, rewriter):
     """Query with a simple join"""
     test_query: Query = seeded_session.query(SDChild).join(SDParent)  # noqa -- wrong typing stub in SA
 
-    snapshot.assert_match(str(rewriter.rewrite_statement(test_query.statement)))
+    soft_deleted_rewritten_statement = rewriter.rewrite_statement(test_query.statement)
+
+    assert (
+        is_filtering_for_softdeleted(soft_deleted_rewritten_statement, {SDChild.__table__, SDParent.__table__}) is True
+    )
 
     snapshot.assert_match(sorted(test_query.all(), key=lambda i: i.id))
 
@@ -30,7 +46,9 @@ def test_query_union_sdchild(snapshot, seeded_session, rewriter):
     """Two queries joined via UNION"""
     test_query: Query = seeded_session.query(SDChild).union(seeded_session.query(SDChild))
 
-    snapshot.assert_match(str(rewriter.rewrite_statement(test_query.statement)))
+    soft_deleted_rewritten_statement = rewriter.rewrite_statement(test_query.statement)
+
+    assert is_filtering_for_softdeleted(soft_deleted_rewritten_statement, {SDChild.__table__}) is True
 
     snapshot.assert_match(sorted(test_query.all(), key=lambda i: i.id))
 
@@ -43,7 +61,9 @@ def test_query_union_sdchild_core(snapshot, seeded_session, rewriter):
         select(sdchild.c.id, sdchild.c.parent_id).select_from(sdchild)
     )
 
-    snapshot.assert_match(str(rewriter.rewrite_statement(select_as_core)))
+    soft_deleted_rewritten_statement = rewriter.rewrite_statement(select_as_core)
+
+    assert is_filtering_for_softdeleted(soft_deleted_rewritten_statement, {SDChild.__table__}) is True
 
 
 def test_query_with_union_but_union_softdelete_disabled(snapshot, seeded_session, rewriter):
@@ -58,7 +78,9 @@ def test_query_with_union_but_union_softdelete_disabled(snapshot, seeded_session
         seeded_session.query(SDChild).execution_options(include_deleted=True)
     )
 
-    snapshot.assert_match(str(rewriter.rewrite_statement(test_query.statement)))
+    soft_deleted_rewritten_statement = rewriter.rewrite_statement(test_query.statement)
+
+    assert is_filtering_for_softdeleted(soft_deleted_rewritten_statement, {SDChild.__table__}) is True
 
     all_children: List[SDChild] = seeded_session.query(SDChild).execution_options(include_deleted=True).all()
 
@@ -71,14 +93,19 @@ def test_ensure_aggregate_from_multiple_table_deletion_works_active_object_count
     """Aggregate function from a query that contains a join"""
     test_query: Query = seeded_session.query(SDChild).join(SDParent).with_entities(func.count())  # noqa
 
-    snapshot.assert_match(str(rewriter.rewrite_statement(test_query.statement)))
+    soft_deleted_rewritten_statement = rewriter.rewrite_statement(test_query.statement)
+
+    assert is_filtering_for_softdeleted(soft_deleted_rewritten_statement, {SDChild.__table__}) is True
+
     snapshot.assert_match(test_query.count())
 
 
 def test_ensure_table_with_inheritance_works(snapshot, seeded_session, rewriter):
     test_query: Query = seeded_session.query(SDDerivedRequest)
 
-    snapshot.assert_match(str(rewriter.rewrite_statement(test_query.statement)))
+    soft_deleted_rewritten_statement = rewriter.rewrite_statement(test_query.statement)
+
+    assert is_filtering_for_softdeleted(soft_deleted_rewritten_statement, {SDBaseRequest.__table__}) is True
 
     test_query_results = test_query.all()
     assert len(test_query_results) == 2
@@ -146,7 +173,7 @@ def test_insert_with_returning(snapshot, seeded_session, rewriter, db_connection
 
 
 def test_query_with_more_than_one_join(snapshot, seeded_session, rewriter):
-    query = (
+    test_query = (
         seeded_session.query(SDParent)
         .join(SDChild)
         .join(SDChildChild)
@@ -155,4 +182,16 @@ def test_query_with_more_than_one_join(snapshot, seeded_session, rewriter):
         )
     )
 
-    snapshot.assert_match(str(rewriter.rewrite_statement(query.statement)))
+    soft_deleted_rewritten_statement = rewriter.rewrite_statement(test_query.statement)
+
+    assert (
+        is_filtering_for_softdeleted(
+            soft_deleted_rewritten_statement,
+            {
+                SDParent.__table__,
+                SDChild.__table__,
+                SDChildChild.__table__,
+            },
+        )
+        is True
+    )
