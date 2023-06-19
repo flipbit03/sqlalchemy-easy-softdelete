@@ -66,7 +66,5 @@ def extract_simple_selects(statement: Union[Select, CompoundSelect]) -> list[Sel
             continue
         elif isinstance(from_obj, Subquery):
             return extract_simple_selects(from_obj.element)
-        else:
-            print("oh no")
 
     raise NotImplementedError(f"Should not reach this point! statement.froms -> \"{statement.froms}\"!")
