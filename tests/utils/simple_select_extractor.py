@@ -3,6 +3,8 @@ Extracts SIMPLE SELECT STATEMENTS from a query
 
 We consider SIMPLE SELECT STATEMENTS to be those that their froms are tables, and not subqueries.
 """
+from __future__ import annotations
+
 from typing import Union
 
 from sqlalchemy.orm.util import _ORMJoin
@@ -52,15 +54,15 @@ def is_simple_select(s: Union[Select, Subquery, CompoundSelect]) -> bool:
     return True
 
 
-def extract_simple_selects(statement: Union[Select, CompoundSelect]) -> list[Select]:
+def extract_simple_selects(statement: Select | CompoundSelect) -> list[Select]:
     if is_simple_select(statement):
         return [statement]
 
     if isinstance(statement, CompoundSelect):
-        extraced_selects = []
+        extracted_elements = []
         for select in statement.selects:
-            extraced_selects.extend(extract_simple_selects(select))
-        return extraced_selects
+            extracted_elements.extend(extract_simple_selects(select))
+        return extracted_elements
 
     for from_obj in statement.get_final_froms():
         if isinstance(from_obj, Table):
