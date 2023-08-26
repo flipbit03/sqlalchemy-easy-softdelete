@@ -33,10 +33,11 @@ def is_simple_select(s: Union[Select, Subquery, CompoundSelect]) -> bool:
     if isinstance(s, Subquery):
         return False
 
-    if not isinstance(s.froms, list):
+    final_froms = s.get_final_froms()
+    if not isinstance(final_froms, list):
         raise NotImplementedError(f"statement.froms is not a list! type -> \"{(type(s.froms))}\"!")
 
-    for from_obj in s.froms:
+    for from_obj in final_froms:
         if isinstance(from_obj, Table):
             continue
         elif isinstance(from_obj, Subquery):
@@ -61,7 +62,7 @@ def extract_simple_selects(statement: Union[Select, CompoundSelect]) -> list[Sel
             extraced_selects.extend(extract_simple_selects(select))
         return extraced_selects
 
-    for from_obj in statement.froms:
+    for from_obj in statement.get_final_froms():
         if isinstance(from_obj, Table):
             continue
         elif isinstance(from_obj, Subquery):
