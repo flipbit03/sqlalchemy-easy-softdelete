@@ -39,9 +39,6 @@ class SoftDeleteQueryRewriter:
 
         """
         """List of table names that should be ignored from soft-deletion"""
-
-        # Get the global SQLAlchemy Registry
-
         self.ignored_tables = ignored_tables or []
         self.deleted_field_name = deleted_field_name
         self.disable_soft_delete_option_name = disable_soft_delete_option_name
