@@ -6,7 +6,15 @@ from sqlalchemy import func, insert, select, table, text
 from sqlalchemy.orm import Query
 from sqlalchemy.sql import Select
 
-from tests.model import SDBaseRequest, SDChild, SDChildChild, SDDerivedRequest, SDParent, SDSimpleTable
+from tests.model import (
+    SDBaseRequest,
+    SDChild,
+    SDChildChild,
+    SDDerivedRequest,
+    SDParent,
+    SDSimpleTable,
+    SDTableThatShouldNotBeSoftDeleted,
+)
 from tests.utils import is_filtering_for_softdeleted
 
 
@@ -194,4 +202,23 @@ def test_query_with_more_than_one_join(snapshot, seeded_session, rewriter):
             },
         )
         is True
+    )
+
+
+def test_query_with_same_field_as_softdelete_field_but_ignored(seeded_session, rewriter):
+    """Test that a query with a field that has the same name as the soft-delete field
+    but is ignored, does not get rewritten"""
+
+    test_query = seeded_session.query(SDTableThatShouldNotBeSoftDeleted)
+
+    soft_deleted_rewritten_statement = rewriter.rewrite_statement(test_query.statement)
+
+    assert (
+        is_filtering_for_softdeleted(
+            soft_deleted_rewritten_statement,
+            {
+                SDTableThatShouldNotBeSoftDeleted.__table__,
+            },
+        )
+        is False
     )

@@ -1,9 +1,10 @@
 from datetime import datetime
 from typing import List
 
-from sqlalchemy import Column, ForeignKey, Integer, String
+from sqlalchemy import Column, DateTime, ForeignKey, Integer, String
 from sqlalchemy.orm import as_declarative, declared_attr, relationship
 
+from sqlalchemy_easy_softdelete.hook import IgnoredTable
 from sqlalchemy_easy_softdelete.mixin import generate_soft_delete_mixin_class
 
 
@@ -19,7 +20,13 @@ class TestModelBase:
         return f"<{self.__class__.__name__} id={self.id}>"
 
 
-class SoftDeleteMixin(generate_soft_delete_mixin_class()):
+class SoftDeleteMixin(
+    generate_soft_delete_mixin_class(
+        ignored_tables=[
+            IgnoredTable(table_schema=None, name='sdclassthatshouldnotbesoftdeleted'),
+        ],
+    )
+):
     # for autocomplete
     deleted_at: datetime
 
@@ -86,3 +93,11 @@ class SDDerivedRequest(SDBaseRequest):
     __mapper_args__ = {
         "polymorphic_identity": "sdderivedrequest",
     }
+
+
+class SDTableThatShouldNotBeSoftDeleted(TestModelBase):
+    id: Integer = Column(Integer, primary_key=True)
+    deleted_at: datetime = Column(DateTime(timezone=True))
+
+    def __repr__(self):
+        return f"<{self.__class__.__name__} id={self.id} name={self.name}>"

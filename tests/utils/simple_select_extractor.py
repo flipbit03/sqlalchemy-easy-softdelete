@@ -9,7 +9,7 @@ from typing import Union
 
 from sqlalchemy.orm.util import _ORMJoin
 from sqlalchemy.sql.schema import Table
-from sqlalchemy.sql.selectable import CompoundSelect, Join, Select, Subquery
+from sqlalchemy.sql.selectable import CompoundSelect, Join, Select, SelectBase, Subquery
 
 
 def is_simple_join(j: Union[Join, _ORMJoin]) -> bool:
@@ -54,7 +54,7 @@ def is_simple_select(s: Union[Select, Subquery, CompoundSelect]) -> bool:
     return True
 
 
-def extract_simple_selects(statement: Select | CompoundSelect) -> list[Select]:
+def extract_simple_selects(statement: Select | CompoundSelect | SelectBase) -> list[SelectBase]:
     if is_simple_select(statement):
         return [statement]
 

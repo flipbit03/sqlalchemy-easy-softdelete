@@ -1,5 +1,7 @@
 """Main query rewriter logic."""
 
+from __future__ import annotations
+
 from typing import TypeVar, Union
 
 from sqlalchemy import Table
@@ -8,13 +10,20 @@ from sqlalchemy.orm.util import _ORMJoin
 from sqlalchemy.sql import Alias, CompoundSelect, Executable, Join, Select, Subquery, TableClause
 from sqlalchemy.sql.elements import TextClause
 
+from sqlalchemy_easy_softdelete.hook import IgnoredTable
+
 Statement = TypeVar('Statement', bound=Union[Select, FromStatement, CompoundSelect, Executable])
 
 
 class SoftDeleteQueryRewriter:
     """Rewrites SQL statements based on configuration."""
 
-    def __init__(self, deleted_field_name: str, disable_soft_delete_option_name: str):
+    def __init__(
+        self,
+        deleted_field_name: str,
+        disable_soft_delete_option_name: str,
+        ignored_tables: list[IgnoredTable] | None = None,
+    ):
         """
         Instantiate a new query rewriter.
 
@@ -29,6 +38,11 @@ class SoftDeleteQueryRewriter:
             soft deletion rewriting in a query
 
         """
+        """List of table names that should be ignored from soft-deletion"""
+
+        # Get the global SQLAlchemy Registry
+
+        self.ignored_tables = ignored_tables or []
         self.deleted_field_name = deleted_field_name
         self.disable_soft_delete_option_name = disable_soft_delete_option_name
 
@@ -133,13 +147,24 @@ class SoftDeleteQueryRewriter:
         raise NotImplementedError(f"Unsupported object \"{(type(from_obj))}\" in statement.froms")
 
     def rewrite_from_table(self, stmt: Select, table: Table) -> Select:
-        """(possibly) Rewrite a Select based on whether the Table contains the soft-delete field or not."""
+        """
+        (possibly) Rewrite a Select based on whether the Table contains the soft-delete field or not.
+
+        Ignore tables named like the ignore_tabl
+
+        """
+        # Early return if the table is ignored
+        if any(ignored.match_name(table) for ignored in self.ignored_tables):
+            return stmt
+
+        # Try to retrieve the column object
         column_obj = table.columns.get(self.deleted_field_name)
 
-        # Caveat: The automatic "bool(column_obj)" conversion actually returns
-        # a truthy value of False (?), so we have to explicitly compare against None
-        if column_obj is not None:
-            return stmt.filter(column_obj.is_(None))
+        # If the column object is not found, return unchanged statement
+        # Caveat: The automatic "bool(column_obj)" conversion actually returns a truthy value of False (?),
+        # so we have to explicitly compare against None
+        if column_obj is None:
+            return stmt
 
-        # Soft-delete argument was not found, return unchanged statement
-        return stmt
+        # Column found. Rewrite the statement with a filter condition in the soft-delete column
+        return stmt.filter(column_obj.is_(None))
