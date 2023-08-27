@@ -60,4 +60,6 @@ def seeded_session(db_session) -> Session:
 
 @pytest.fixture
 def rewriter() -> SoftDeleteQueryRewriter:
-    return SoftDeleteQueryRewriter("deleted_at", "include_deleted")
+    from sqlalchemy_easy_softdelete.handler.sqlalchemy_easy_softdelete import global_rewriter
+
+    return global_rewriter

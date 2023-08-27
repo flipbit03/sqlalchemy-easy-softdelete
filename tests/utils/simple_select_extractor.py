@@ -3,11 +3,13 @@ Extracts SIMPLE SELECT STATEMENTS from a query
 
 We consider SIMPLE SELECT STATEMENTS to be those that their froms are tables, and not subqueries.
 """
+from __future__ import annotations
+
 from typing import Union
 
 from sqlalchemy.orm.util import _ORMJoin
 from sqlalchemy.sql.schema import Table
-from sqlalchemy.sql.selectable import CompoundSelect, Join, Select, Subquery
+from sqlalchemy.sql.selectable import CompoundSelect, Join, Select, SelectBase, Subquery
 
 
 def is_simple_join(j: Union[Join, _ORMJoin]) -> bool:
@@ -33,10 +35,11 @@ def is_simple_select(s: Union[Select, Subquery, CompoundSelect]) -> bool:
     if isinstance(s, Subquery):
         return False
 
-    if not isinstance(s.froms, list):
+    final_froms = s.get_final_froms()
+    if not isinstance(final_froms, list):
         raise NotImplementedError(f"statement.froms is not a list! type -> \"{(type(s.froms))}\"!")
 
-    for from_obj in s.froms:
+    for from_obj in final_froms:
         if isinstance(from_obj, Table):
             continue
         elif isinstance(from_obj, Subquery):
@@ -51,17 +54,17 @@ def is_simple_select(s: Union[Select, Subquery, CompoundSelect]) -> bool:
     return True
 
 
-def extract_simple_selects(statement: Union[Select, CompoundSelect]) -> list[Select]:
+def extract_simple_selects(statement: Select | CompoundSelect | SelectBase) -> list[SelectBase]:
     if is_simple_select(statement):
         return [statement]
 
     if isinstance(statement, CompoundSelect):
-        extraced_selects = []
+        extracted_elements = []
         for select in statement.selects:
-            extraced_selects.extend(extract_simple_selects(select))
-        return extraced_selects
+            extracted_elements.extend(extract_simple_selects(select))
+        return extracted_elements
 
-    for from_obj in statement.froms:
+    for from_obj in statement.get_final_froms():
         if isinstance(from_obj, Table):
             continue
         elif isinstance(from_obj, Subquery):

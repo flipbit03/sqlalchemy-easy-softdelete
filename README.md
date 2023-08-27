@@ -27,12 +27,17 @@ pip install sqlalchemy-easy-softdelete
 
 ```py
 from sqlalchemy_easy_softdelete.mixin import generate_soft_delete_mixin_class
+from sqlalchemy_easy_softdelete.hook import IgnoredTable
 from sqlalchemy.orm import declarative_base
 from sqlalchemy import Column, Integer
 from datetime import datetime
 
 # Create a Class that inherits from our class builder
-class SoftDeleteMixin(generate_soft_delete_mixin_class()):
+class SoftDeleteMixin(generate_soft_delete_mixin_class(
+    # This table will be ignored by the hook
+    # even if the table has the soft-delete column
+    ignored_tables=[IgnoredTable(table_schema="public", name="cars"),]
+)):
     # type hint for autocomplete IDE support
     deleted_at: datetime
 

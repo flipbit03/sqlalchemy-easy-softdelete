@@ -30,7 +30,11 @@ def is_simple_select_doing_soft_delete_filtering(stmt: Select, tables: set[Table
         # Skip checking in this query
         return True
 
-    assert stmt.whereclause is not None
+    # if we don't have a where clause, we can't be filtering for soft-deleted
+    # Caveat: We need to compare with None, since and whereclause usually does not have a __bool__ method
+    if stmt.whereclause is None:
+        return False
+
     binary_expressions = extract_binary_expressions_from_where(stmt.whereclause)
 
     found_tables = set()
