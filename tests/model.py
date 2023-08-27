@@ -23,7 +23,7 @@ class TestModelBase:
 class SoftDeleteMixin(
     generate_soft_delete_mixin_class(
         ignored_tables=[
-            IgnoredTable(table_schema=None, name='sdclassthatshouldnotbesoftdeleted'),
+            IgnoredTable(table_schema=None, name='sdtablethatshouldnotbesoftdeleted'),
         ],
     )
 ):
