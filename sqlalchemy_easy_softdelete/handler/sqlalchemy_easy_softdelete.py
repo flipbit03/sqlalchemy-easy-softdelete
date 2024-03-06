@@ -2,6 +2,7 @@
 
 from typing import List, Optional
 
+from hook import EnabledTable
 from sqlalchemy.event import listens_for
 from sqlalchemy.orm import ORMExecuteState, Session
 
@@ -12,7 +13,10 @@ global_rewriter: Optional[SoftDeleteQueryRewriter] = None
 
 
 def activate_soft_delete_hook(
-    deleted_field_name: str, disable_soft_delete_option_name: str, ignored_tables: List[IgnoredTable]
+    deleted_field_name: str,
+    disable_soft_delete_option_name: str,
+    ignored_tables: List[IgnoredTable],
+    enabled_tables: Optional[List[EnabledTable]] = None,
 ):
     """Activate an event hook to rewrite the queries."""
 
@@ -21,6 +25,7 @@ def activate_soft_delete_hook(
         deleted_field_name=deleted_field_name,
         disable_soft_delete_option_name=disable_soft_delete_option_name,
         ignored_tables=ignored_tables,
+        enabled_tables=enabled_tables,
     )
 
     # Enable Soft Delete on all Relationship Loads which implement SoftDeleteMixin

@@ -23,6 +23,7 @@ class SoftDeleteQueryRewriter:
         deleted_field_name: str,
         disable_soft_delete_option_name: str,
         ignored_tables: list[IgnoredTable] | None = None,
+        enabled_tables: list[IgnoredTable] | None = None,
     ):
         """
         Instantiate a new query rewriter.
@@ -40,6 +41,7 @@ class SoftDeleteQueryRewriter:
         """
         """List of table names that should be ignored from soft-deletion"""
         self.ignored_tables = ignored_tables or []
+        self.enabled_tables = enabled_tables or []
         self.deleted_field_name = deleted_field_name
         self.disable_soft_delete_option_name = disable_soft_delete_option_name
 
@@ -152,6 +154,10 @@ class SoftDeleteQueryRewriter:
         """
         # Early return if the table is ignored
         if any(ignored.match_name(table) for ignored in self.ignored_tables):
+            return stmt
+
+        # Early return if the table is not enabled
+        if self.enabled_tables and not any(enabled.match_name(table) for enabled in self.enabled_tables):
             return stmt
 
         # Try to retrieve the column object
