@@ -18,9 +18,11 @@ def tests(session):
 
     sqla_versions = SQLA_VERSIONS.get(python_version, ["2.0.46"])
 
+    # Pin versions to match pyproject.toml for reproducibility
+    session.install("pytest>=8.3.4")
+    session.install("syrupy>=4.8.0")
+    session.install("psycopg2-binary>=2.9.0")
+
     for sqla_version in sqla_versions:
         session.install(f"SQLAlchemy=={sqla_version}")
-        session.install("pytest")
-        session.install("syrupy")
-        session.install("psycopg2-binary")
         session.run("pytest", "-v", "--tb=short")
