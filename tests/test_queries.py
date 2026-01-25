@@ -233,7 +233,7 @@ def test_query_with_same_field_as_softdelete_field_but_ignored(seeded_session, r
 def test_query_with_joinedload_filters_soft_deleted(seeded_session, rewriter):
     """Test that joinedload properly filters soft-deleted related records.
 
-    This is a regression test for issue #33: Soft Deletion in Joined Subqueries.
+    This is a regression test for soft deletion in joined subqueries.
     When using joinedload(), SQLAlchemy creates subqueries in the JOIN clause,
     and these subqueries must also have soft-delete filters applied.
     """
@@ -368,14 +368,14 @@ def test_eager_loading_does_not_affect_normal_soft_delete_filtering(seeded_sessi
 
 
 # ==============================================================================
-# Tests for lambda_stmt support (Issue #29)
+# Tests for lambda_stmt support
 # ==============================================================================
 
 
 def test_lambda_stmt_basic(seeded_session, rewriter):
     """Test that a basic lambda_stmt gets soft-delete filtering applied.
 
-    This tests issue #29: LambdaElement not implemented.
+    This tests LambdaElement support.
     When using lambda_stmt (often used by advanced-alchemy), the soft-delete
     rewriter should handle the LambdaElement and apply filters to the underlying
     Select statement.
@@ -940,7 +940,7 @@ def test_lambda_stmt_eager_load_with_include_deleted_disables_all_filtering(seed
 def test_lambda_stmt_joinedload_adds_loader_criteria_option(rewriter):
     """Verify that rewriting lambda_stmt with joinedload adds LoaderCriteriaOption.
 
-    This is a regression test ensuring that the fix from PR #37 (commit 57899f9)
+    This is a regression test ensuring that the eager loading fix
     works correctly with lambda_stmt. The _add_loader_criteria_for_eager_loads()
     method should detect eager loading options on the resolved Select and add
     with_loader_criteria for soft-deletable entities.
