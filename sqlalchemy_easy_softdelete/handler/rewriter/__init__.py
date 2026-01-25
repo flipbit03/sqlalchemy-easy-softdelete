@@ -108,7 +108,7 @@ class SoftDeleteQueryRewriter:
             if path is None:
                 continue
 
-            for path_element in path:  # type: ignore[union-attr]
+            for path_element in path:  # type: ignore[attr-defined]
                 entity_class = self._extract_entity_class_from_path_element(path_element)
                 if entity_class is None:
                     continue
