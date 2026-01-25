@@ -102,15 +102,14 @@ class SoftDeleteQueryRewriter:
             if not isinstance(opt, Load):
                 continue
 
-            # Load.path is a public attribute containing the entity/relationship path
+            # Load.path is a public attribute containing the entity/relationship path.
+            # PathRegistry is iterable at runtime but mypy doesn't recognize it.
             path = opt.path
             if path is None:
                 continue
 
-            # Iterate using index access since PathRegistry has __getitem__ and __len__
-            # but mypy doesn't recognize it as Iterable
-            for i in range(len(path)):
-                entity_class = self._extract_entity_class_from_path_element(path[i])
+            for path_element in path:  # type: ignore[union-attr]
+                entity_class = self._extract_entity_class_from_path_element(path_element)
                 if entity_class is None:
                     continue
 
