@@ -2,7 +2,7 @@
 
 import pytest
 from sqlalchemy import func, insert, select, table, text
-from sqlalchemy.orm import Query, joinedload
+from sqlalchemy.orm import Query, joinedload, selectinload, subqueryload
 from sqlalchemy.sql import Select
 
 from tests.model import (
@@ -246,3 +246,127 @@ def test_query_with_joinedload_filters_soft_deleted(seeded_session, rewriter):
     # This verifies that the soft-delete filter was applied to the joinedload subquery
     for child in parent.children:
         assert child.deleted_at is None, f"Child {child.id} should not be deleted but has deleted_at={child.deleted_at}"
+
+
+def test_query_with_selectinload_filters_soft_deleted(seeded_session, rewriter):
+    """Test that selectinload properly filters soft-deleted related records.
+
+    selectinload uses a separate SELECT ... WHERE id IN (...) query to load related records.
+    """
+    parent = (
+        seeded_session.query(SDParent).options(selectinload(SDParent.children)).filter(SDParent.id == 1000).first()
+    )
+
+    assert parent is not None
+    assert parent.id == 1000
+
+    # All loaded children should be non-deleted
+    for child in parent.children:
+        assert child.deleted_at is None, f"Child {child.id} should not be deleted but has deleted_at={child.deleted_at}"
+
+
+def test_query_with_subqueryload_filters_soft_deleted(seeded_session, rewriter):
+    """Test that subqueryload properly filters soft-deleted related records.
+
+    subqueryload uses a subquery to load all related records in one query.
+    """
+    parent = (
+        seeded_session.query(SDParent).options(subqueryload(SDParent.children)).filter(SDParent.id == 1000).first()
+    )
+
+    assert parent is not None
+    assert parent.id == 1000
+
+    # All loaded children should be non-deleted
+    for child in parent.children:
+        assert child.deleted_at is None, f"Child {child.id} should not be deleted but has deleted_at={child.deleted_at}"
+
+
+def test_query_with_nested_joinedload_filters_soft_deleted(seeded_session, rewriter):
+    """Test that chained/nested joinedload properly filters soft-deleted records at all levels.
+
+    This tests: Parent -> Children -> Grandchildren with joinedload at each level.
+    """
+    parent = (
+        seeded_session.query(SDParent)
+        .options(joinedload(SDParent.children).joinedload(SDChild.child_children))
+        .filter(SDParent.id == 1000)
+        .first()
+    )
+
+    assert parent is not None
+    assert parent.id == 1000
+
+    # All children should be non-deleted
+    for child in parent.children:
+        assert child.deleted_at is None, f"Child {child.id} should not be deleted"
+
+        # All grandchildren should also be non-deleted
+        for grandchild in child.child_children:
+            assert (
+                grandchild.deleted_at is None
+            ), f"Grandchild {grandchild.id} should not be deleted but has deleted_at={grandchild.deleted_at}"
+
+
+def test_query_with_mixed_eager_loading_strategies(seeded_session, rewriter):
+    """Test mixing different eager loading strategies in the same query.
+
+    Uses joinedload for children and selectinload for grandchildren.
+    """
+    parent = (
+        seeded_session.query(SDParent)
+        .options(joinedload(SDParent.children).selectinload(SDChild.child_children))
+        .filter(SDParent.id == 1000)
+        .first()
+    )
+
+    assert parent is not None
+
+    # All children should be non-deleted
+    for child in parent.children:
+        assert child.deleted_at is None, f"Child {child.id} should not be deleted"
+
+        # All grandchildren should also be non-deleted
+        for grandchild in child.child_children:
+            assert grandchild.deleted_at is None, f"Grandchild {grandchild.id} should not be deleted"
+
+
+def test_query_with_multiple_parents_and_eager_loading(seeded_session, rewriter):
+    """Test eager loading across multiple parent records.
+
+    Ensures soft-delete filtering works when loading children for multiple parents.
+    """
+    parents = (
+        seeded_session.query(SDParent)
+        .options(joinedload(SDParent.children))
+        .filter(SDParent.id.in_([1000, 1001]))
+        .all()
+    )
+
+    assert len(parents) == 2
+
+    for parent in parents:
+        # All children of each parent should be non-deleted
+        for child in parent.children:
+            assert (
+                child.deleted_at is None
+            ), f"Child {child.id} of parent {parent.id} should not be deleted"
+
+
+def test_eager_loading_does_not_affect_normal_soft_delete_filtering(seeded_session, rewriter):
+    """Verify that adding eager loading options doesn't break normal soft-delete filtering.
+
+    The parent table itself should still be filtered for soft-deleted records.
+    """
+    # Parent 1002 is soft-deleted, so it should not appear in results
+    parents = (
+        seeded_session.query(SDParent)
+        .options(joinedload(SDParent.children))
+        .all()
+    )
+
+    # Should only get parents 1000 and 1001, not 1002 (which is deleted)
+    parent_ids = [p.id for p in parents]
+    assert 1000 in parent_ids
+    assert 1001 in parent_ids
+    assert 1002 not in parent_ids, "Soft-deleted parent 1002 should not be in results"
