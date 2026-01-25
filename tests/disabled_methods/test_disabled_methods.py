@@ -26,12 +26,7 @@ def test_can_manually_set_deleted_at(db_session):
     db_session.commit()
 
     # After commit, the object is soft-deleted so query with include_deleted
-    result = (
-        db_session.query(DMTable)
-        .execution_options(include_deleted=True)
-        .filter(DMTable.id == obj_id)
-        .first()
-    )
+    result = db_session.query(DMTable).execution_options(include_deleted=True).filter(DMTable.id == obj_id).first()
     assert result is not None
     assert result.deleted_at is not None
 

@@ -1,7 +1,7 @@
 from datetime import datetime
 
 from sqlalchemy import Column, DateTime, ForeignKey, Integer, String
-from sqlalchemy.orm import Mapped, as_declarative, declared_attr, relationship
+from sqlalchemy.orm import Mapped, as_declarative, relationship
 
 from sqlalchemy_easy_softdelete.hook import IgnoredTable
 from sqlalchemy_easy_softdelete.mixin import generate_soft_delete_mixin_class
@@ -9,18 +9,14 @@ from sqlalchemy_easy_softdelete.mixin import generate_soft_delete_mixin_class
 
 @as_declarative()
 class TestModelBase:
-    @declared_attr
-    def __tablename__(cls) -> str:
-        return cls.__name__.lower()
-
     id = Column(Integer, primary_key=True, autoincrement=True)
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"<{self.__class__.__name__} id={self.id}>"
 
 
 class SoftDeleteMixin(
-    generate_soft_delete_mixin_class(
+    generate_soft_delete_mixin_class(  # type: ignore[misc]
         ignored_tables=[
             IgnoredTable(table_schema=None, name="sdtablethatshouldnotbesoftdeleted"),
         ],
@@ -31,7 +27,7 @@ class SoftDeleteMixin(
     # SQLAlchemy column that supports query operations like .where()
     deleted_at: Mapped[datetime | None]
 
-    # Optional: Add method stubs for delete/undelete if you want type hints for these.
+    # Optional: Add method stubs for delete/undelete for type checker support.
     # The actual implementations are provided by the generated mixin class.
     def delete(self, v: datetime | None = None) -> None:
         super().delete(v)  # type: ignore[misc]
@@ -41,62 +37,58 @@ class SoftDeleteMixin(
 
 
 class SDSimpleTable(TestModelBase, SoftDeleteMixin):
+    __tablename__ = "sdsimpletable"
     int_field = Column(Integer)
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"<{self.__class__.__name__} id={self.id} deleted={bool(self.deleted_at)}>"
 
 
 class SDParent(TestModelBase, SoftDeleteMixin):
-    __allow_unmapped__ = True
-    children = relationship("SDChild", back_populates="parent")
+    __tablename__ = "sdparent"
+    children: Mapped[list["SDChild"]] = relationship("SDChild", back_populates="parent")  # type: ignore[assignment]
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"<{self.__class__.__name__} id={self.id} deleted={bool(self.deleted_at)}>"
 
 
 class SDChild(TestModelBase, SoftDeleteMixin):
-    __allow_unmapped__ = True
-    parent_id = Column(Integer, ForeignKey(f"{SDParent.__tablename__}.id"), nullable=False)
-    parent = relationship("SDParent", back_populates="children")
+    __tablename__ = "sdchild"
+    parent_id = Column(Integer, ForeignKey("sdparent.id"), nullable=False)
+    parent: Mapped["SDParent"] = relationship("SDParent", back_populates="children")  # type: ignore[assignment]
+    child_children: Mapped[list["SDChildChild"]] = relationship("SDChildChild", back_populates="child")  # type: ignore[assignment]
 
-    child_children = relationship("SDChildChild", back_populates="child")
-
-    def __repr__(self):
+    def __repr__(self) -> str:
         pid = f"(parent_id={self.parent_id})"
         left = f"{self.__class__.__name__} id={self.id} deleted={bool(self.deleted_at)}"
         return f"<{left:30} {pid:>15}>"
 
 
 class SDChildChild(TestModelBase, SoftDeleteMixin):
-    __allow_unmapped__ = True
+    __tablename__ = "sdchildchild"
+    child_id = Column(Integer, ForeignKey("sdchild.id"), nullable=False)
+    child: Mapped["SDChild"] = relationship("SDChild", back_populates="child_children")  # type: ignore[assignment]
 
-    child_id = Column(Integer, ForeignKey(f"{SDChild.__tablename__}.id"), nullable=False)
-    child: SDChild = relationship("SDChild", back_populates="child_children")
-
-    def __repr__(self):
+    def __repr__(self) -> str:
         pid = f"(child_id={self.child_id})"
         left = f"{self.__class__.__name__} id={self.id} deleted={bool(self.deleted_at)}"
         return f"<{left:30} {pid:>15}>"
 
 
-class SDBaseRequest(
-    TestModelBase,
-    SoftDeleteMixin,
-):
+class SDBaseRequest(TestModelBase, SoftDeleteMixin):
+    __tablename__ = "sdbaserequest"
     request_type = Column(String(50))
-
     base_field = Column(Integer)
 
     __mapper_args__ = {
         "polymorphic_identity": "sdbaserequest",
-        "polymorphic_on": request_type,
+        "polymorphic_on": "request_type",
     }
 
 
 class SDDerivedRequest(SDBaseRequest):
-    id: Integer = Column(Integer, ForeignKey("sdbaserequest.id"), primary_key=True)
-
+    __tablename__ = "sdderivedrequest"
+    id = Column(Integer, ForeignKey("sdbaserequest.id"), primary_key=True)
     derived_field = Column(Integer)
 
     __mapper_args__ = {
@@ -105,8 +97,9 @@ class SDDerivedRequest(SDBaseRequest):
 
 
 class SDTableThatShouldNotBeSoftDeleted(TestModelBase):
-    id: Integer = Column(Integer, primary_key=True)
-    deleted_at: datetime = Column(DateTime(timezone=True))
+    __tablename__ = "sdtablethatshouldnotbesoftdeleted"
+    id = Column(Integer, primary_key=True)
+    deleted_at = Column(DateTime(timezone=True))
 
-    def __repr__(self):
-        return f"<{self.__class__.__name__} id={self.id} name={self.name}>"
+    def __repr__(self) -> str:
+        return f"<{self.__class__.__name__} id={self.id}>"

@@ -32,15 +32,27 @@ from sqlalchemy import Column, Integer
 from datetime import datetime
 
 # Create a Class that inherits from our class builder
-class SoftDeleteMixin(generate_soft_delete_mixin_class(
-    # This table will be ignored by the hook
-    # even if the table has the soft-delete column
-    ignored_tables=[IgnoredTable(table_schema="public", name="cars"),]
-)):
+class SoftDeleteMixin(
+    generate_soft_delete_mixin_class(  # type: ignore[misc]
+        # This table will be ignored by the hook
+        # even if the table has the soft-delete column
+        ignored_tables=[IgnoredTable(table_schema="public", name="cars"),]
+    )
+):
+    # type: ignore[misc] is required because the mixin is dynamically generated
+
     # Type hint for IDE autocomplete and type checker support.
     # Using Mapped[T | None] ensures type checkers understand this is a
     # SQLAlchemy column that supports query operations like .where()
     deleted_at: Mapped[datetime | None]
+
+    # Optional: Add method stubs for delete/undelete for type checker support.
+    # The actual implementations are provided by the generated mixin class.
+    def delete(self, v: datetime | None = None) -> None:
+        super().delete(v)  # type: ignore[misc]
+
+    def undelete(self) -> None:
+        super().undelete()  # type: ignore[misc]
 
 # Apply the mixin to your Models
 Base = declarative_base()

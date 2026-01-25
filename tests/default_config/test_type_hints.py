@@ -141,7 +141,8 @@ def test_undelete_method_is_callable(seeded_session):
     """Verify that the undelete() method stub works correctly."""
     # Get a deleted instance
     child = (
-        seeded_session.query(SDChild)
+        seeded_session
+        .query(SDChild)
         .execution_options(include_deleted=True)
         .filter(SDChild.deleted_at.isnot(None))
         .first()
