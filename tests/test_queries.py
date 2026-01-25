@@ -253,9 +253,7 @@ def test_query_with_selectinload_filters_soft_deleted(seeded_session, rewriter):
 
     selectinload uses a separate SELECT ... WHERE id IN (...) query to load related records.
     """
-    parent = (
-        seeded_session.query(SDParent).options(selectinload(SDParent.children)).filter(SDParent.id == 1000).first()
-    )
+    parent = seeded_session.query(SDParent).options(selectinload(SDParent.children)).filter(SDParent.id == 1000).first()
 
     assert parent is not None
     assert parent.id == 1000
@@ -270,9 +268,7 @@ def test_query_with_subqueryload_filters_soft_deleted(seeded_session, rewriter):
 
     subqueryload uses a subquery to load all related records in one query.
     """
-    parent = (
-        seeded_session.query(SDParent).options(subqueryload(SDParent.children)).filter(SDParent.id == 1000).first()
-    )
+    parent = seeded_session.query(SDParent).options(subqueryload(SDParent.children)).filter(SDParent.id == 1000).first()
 
     assert parent is not None
     assert parent.id == 1000
@@ -288,7 +284,8 @@ def test_query_with_nested_joinedload_filters_soft_deleted(seeded_session, rewri
     This tests: Parent -> Children -> Grandchildren with joinedload at each level.
     """
     parent = (
-        seeded_session.query(SDParent)
+        seeded_session
+        .query(SDParent)
         .options(joinedload(SDParent.children).joinedload(SDChild.child_children))
         .filter(SDParent.id == 1000)
         .first()
@@ -303,9 +300,9 @@ def test_query_with_nested_joinedload_filters_soft_deleted(seeded_session, rewri
 
         # All grandchildren should also be non-deleted
         for grandchild in child.child_children:
-            assert (
-                grandchild.deleted_at is None
-            ), f"Grandchild {grandchild.id} should not be deleted but has deleted_at={grandchild.deleted_at}"
+            assert grandchild.deleted_at is None, (
+                f"Grandchild {grandchild.id} should not be deleted but has deleted_at={grandchild.deleted_at}"
+            )
 
 
 def test_query_with_mixed_eager_loading_strategies(seeded_session, rewriter):
@@ -314,7 +311,8 @@ def test_query_with_mixed_eager_loading_strategies(seeded_session, rewriter):
     Uses joinedload for children and selectinload for grandchildren.
     """
     parent = (
-        seeded_session.query(SDParent)
+        seeded_session
+        .query(SDParent)
         .options(joinedload(SDParent.children).selectinload(SDChild.child_children))
         .filter(SDParent.id == 1000)
         .first()
@@ -337,7 +335,8 @@ def test_query_with_multiple_parents_and_eager_loading(seeded_session, rewriter)
     Ensures soft-delete filtering works when loading children for multiple parents.
     """
     parents = (
-        seeded_session.query(SDParent)
+        seeded_session
+        .query(SDParent)
         .options(joinedload(SDParent.children))
         .filter(SDParent.id.in_([1000, 1001]))
         .all()
@@ -348,9 +347,7 @@ def test_query_with_multiple_parents_and_eager_loading(seeded_session, rewriter)
     for parent in parents:
         # All children of each parent should be non-deleted
         for child in parent.children:
-            assert (
-                child.deleted_at is None
-            ), f"Child {child.id} of parent {parent.id} should not be deleted"
+            assert child.deleted_at is None, f"Child {child.id} of parent {parent.id} should not be deleted"
 
 
 def test_eager_loading_does_not_affect_normal_soft_delete_filtering(seeded_session, rewriter):
@@ -359,11 +356,7 @@ def test_eager_loading_does_not_affect_normal_soft_delete_filtering(seeded_sessi
     The parent table itself should still be filtered for soft-deleted records.
     """
     # Parent 1002 is soft-deleted, so it should not appear in results
-    parents = (
-        seeded_session.query(SDParent)
-        .options(joinedload(SDParent.children))
-        .all()
-    )
+    parents = seeded_session.query(SDParent).options(joinedload(SDParent.children)).all()
 
     # Should only get parents 1000 and 1001, not 1002 (which is deleted)
     parent_ids = [p.id for p in parents]

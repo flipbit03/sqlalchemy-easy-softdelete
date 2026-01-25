@@ -107,8 +107,10 @@ class SoftDeleteQueryRewriter:
             if path is None:
                 continue
 
-            for path_element in path:
-                entity_class = self._extract_entity_class_from_path_element(path_element)
+            # Iterate using index access since PathRegistry has __getitem__ and __len__
+            # but mypy doesn't recognize it as Iterable
+            for i in range(len(path)):
+                entity_class = self._extract_entity_class_from_path_element(path[i])
                 if entity_class is None:
                     continue
 
