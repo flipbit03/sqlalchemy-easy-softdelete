@@ -1,10 +1,14 @@
 sources = sqlalchemy_easy_softdelete
 
-.PHONY: lint test test-pg test-all coverage clean dev pg pg-stop python-versions
+.PHONY: lint typecheck test test-pg test-all coverage clean dev pg pg-stop python-versions
 
-# Run linting
+# Run linting (ruff)
 lint:
 	uv run pre-commit run --all-files
+
+# Run type checking (mypy)
+typecheck:
+	uv run mypy $(sources)
 
 # Quick test with SQLite (no docker needed)
 test:

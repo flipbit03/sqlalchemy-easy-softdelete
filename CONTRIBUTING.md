@@ -72,15 +72,16 @@ This runs `pre-commit` with ruff for linting and formatting.
 ### Type Checking
 
 ```bash
-uv run mypy sqlalchemy_easy_softdelete
+make typecheck
 ```
 
 ## Pull Request Process
 
 1. Ensure all tests pass: `make test-all`
 2. Ensure linting passes: `make lint`
-3. Update documentation if needed
-4. Submit your PR against the `main` branch
+3. Ensure type checking passes: `make typecheck`
+4. Update documentation if needed
+5. Submit your PR against the `main` branch
 
 ## Makefile Reference
 
@@ -88,6 +89,7 @@ uv run mypy sqlalchemy_easy_softdelete
 |---------|-------------|
 | `make dev` | Install development dependencies |
 | `make lint` | Run linting (pre-commit + ruff) |
+| `make typecheck` | Run type checking (mypy) |
 | `make test` | Quick test with SQLite |
 | `make test-pg` | Test with PostgreSQL |
 | `make test-all` | Full CI test matrix |
