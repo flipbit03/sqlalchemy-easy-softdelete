@@ -30,10 +30,19 @@ jobs:
           echo "GITHUB_REF: ${{ github.ref }}"
           export VERSION=$(echo ${{ github.ref }} | sed -e 's,.*/\(.*\),\1,' -e 's/^v//')
           echo Setting version to $VERSION
+
+          # Update version in pyproject.toml
           sed -i "s/^version = \"0.0.0\"/version = \"$VERSION\"/" pyproject.toml
           echo "======================================"
           echo "Version line in pyproject.toml:"
           grep "^version" pyproject.toml
+          echo "======================================"
+
+          # Update version in __init__.py
+          sed -i "s/__version__ = \"0.0.0\"/__version__ = \"$VERSION\"/" sqlalchemy_easy_softdelete/__init__.py
+          echo "======================================"
+          echo "Version line in __init__.py:"
+          grep "__version__" sqlalchemy_easy_softdelete/__init__.py
           echo "======================================"
 
       - name: Build wheels and source tarball
