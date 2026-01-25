@@ -60,6 +60,10 @@ all_fruits = session.query(Fruit).execution_options(include_deleted=True).all()
 ```
 Setting `include_deleted=True` (attribute name can be customized) in the query disables soft delete for that query.
 
-#### License
+### Contributing
+
+Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and guidelines.
+
+### License
 
 * BSD-3-Clause
