@@ -1,10 +1,10 @@
 # SQLAlchemy Easy Soft-Delete
 
-[![PyPI - Python Version](https://img.shields.io/pypi/pyversions/sqlalchemy-easy-softdelete)](https://pypi.org/project/sqlalchemy-easy-softdelete/)
-[![PyPI - Version](https://img.shields.io/pypi/v/sqlalchemy-easy-softdelete)](https://pypi.org/project/sqlalchemy-easy-softdelete/)
-[![PyPI - Types](https://img.shields.io/pypi/types/sqlalchemy-easy-softdelete)](https://pypi.org/project/sqlalchemy-easy-softdelete/)
-[![PyPI - Downloads](https://img.shields.io/pypi/dm/sqlalchemy-easy-softdelete)](https://pypi.org/project/sqlalchemy-easy-softdelete/)
-![Supported SQLAlchemy Versions](https://img.shields.io/badge/SQLAlchemy-1.4%20%2F%202.0-brightgreen)
+[![PyPI - Python Version](https://img.shields.io/pypi/pyversions/sqlalchemy-easy-softdelete?v=1)](https://pypi.org/project/sqlalchemy-easy-softdelete/)
+[![PyPI - Version](https://img.shields.io/pypi/v/sqlalchemy-easy-softdelete?v=1)](https://pypi.org/project/sqlalchemy-easy-softdelete/)
+[![PyPI - Types](https://img.shields.io/pypi/types/sqlalchemy-easy-softdelete?v=1)](https://pypi.org/project/sqlalchemy-easy-softdelete/)
+[![PyPI - Downloads](https://img.shields.io/pypi/dm/sqlalchemy-easy-softdelete?v=1)](https://pypi.org/project/sqlalchemy-easy-softdelete/)
+![Supported SQLAlchemy Versions](https://img.shields.io/badge/SQLAlchemy-1.4%20%2F%202.0-brightgreen?v=1)
 
 Easily add soft-deletion to your SQLAlchemy Models and automatically filter out soft-deleted objects from your queries and relationships.
 
