@@ -54,13 +54,13 @@
 # ---
 # name: test_query_with_table_clause_as_table
   '''
-  SELECT id 
+  SELECT id
   FROM sdderivedrequest
   '''
 # ---
 # name: test_query_with_text_clause_as_table
   '''
-  SELECT id 
+  SELECT id
   FROM sdderivedrequest
   '''
 # ---

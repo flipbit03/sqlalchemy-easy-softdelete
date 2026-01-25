@@ -150,7 +150,9 @@ def test_query_with_text_clause_as_table(snapshot, seeded_session, rewriter):
 
     # Table as a TextClause
     test_query_text_clause: Select = select(text("id")).select_from(text("sdderivedrequest"))
-    assert str(rewriter.rewrite_statement(test_query_text_clause)) == snapshot
+    # Strip trailing whitespace from SQL lines for consistent comparison
+    sql = "\n".join(line.rstrip() for line in str(rewriter.rewrite_statement(test_query_text_clause)).splitlines())
+    assert sql == snapshot
 
 
 def test_query_with_table_clause_as_table(snapshot, seeded_session, rewriter):
@@ -158,7 +160,9 @@ def test_query_with_table_clause_as_table(snapshot, seeded_session, rewriter):
 
     # Table as a TableClause
     test_query_table_clause: Select = select(text("id")).select_from(table("sdderivedrequest"))
-    assert str(rewriter.rewrite_statement(test_query_table_clause)) == snapshot
+    # Strip trailing whitespace from SQL lines for consistent comparison
+    sql = "\n".join(line.rstrip() for line in str(rewriter.rewrite_statement(test_query_table_clause)).splitlines())
+    assert sql == snapshot
 
 
 def test_insert_with_returning(snapshot, seeded_session, rewriter, db_connection):
