@@ -1,7 +1,10 @@
 """This module is responsible for activating the query rewriter."""
 
+from typing import cast
+
 from sqlalchemy.event import listens_for
 from sqlalchemy.orm import ORMExecuteState, Session
+from sqlalchemy.sql import Executable
 
 from sqlalchemy_easy_softdelete.handler.rewriter import SoftDeleteQueryRewriter
 from sqlalchemy_easy_softdelete.hook import IgnoredTable
@@ -31,4 +34,6 @@ def activate_soft_delete_hook(
         adapted = global_rewriter.rewrite_statement(state.statement)
 
         # Replace the statement
-        state.statement = adapted
+        # Cast needed because Statement type includes LambdaElement which mypy
+        # doesn't recognize as Executable (even though it is at runtime)
+        state.statement = cast(Executable, adapted)

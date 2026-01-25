@@ -11,11 +11,12 @@ from sqlalchemy.orm.strategy_options import Load
 from sqlalchemy.orm.util import _ORMJoin
 from sqlalchemy.sql import Alias, CompoundSelect, Executable, Join, Select, Subquery, TableClause
 from sqlalchemy.sql.elements import TextClause
+from sqlalchemy.sql.lambdas import LambdaElement
 
 from sqlalchemy_easy_softdelete.hook import IgnoredTable
 
 # Type alias for statements we can rewrite
-Statement = Select | FromStatement | CompoundSelect | Executable
+Statement = Select | FromStatement | CompoundSelect | Executable | LambdaElement
 
 
 class SoftDeleteQueryRewriter:
@@ -55,6 +56,11 @@ class SoftDeleteQueryRewriter:
         if isinstance(stmt, CompoundSelect):
             return self.rewrite_compound_select(stmt)
 
+        # Handle LambdaElement (StatementLambdaElement, LinkedLambdaElement)
+        # Used by lambda_stmt() for statement caching (e.g., advanced-alchemy)
+        if isinstance(stmt, LambdaElement):
+            return self.rewrite_lambda_element(stmt)
+
         # Handle FromStatement which is also a Select/Executable
         if isinstance(stmt, FromStatement):
             # Explicitly protect against INSERT with RETURNING
@@ -64,6 +70,29 @@ class SoftDeleteQueryRewriter:
             return stmt
 
         raise NotImplementedError(f'Unsupported statement type "{(type(stmt))}"!')
+
+    def rewrite_lambda_element(self, stmt: LambdaElement) -> LambdaElement:
+        """Rewrite a LambdaElement (from lambda_stmt()).
+
+        LambdaElement wraps a SQL statement for caching purposes. The actual
+        statement is accessed via the _resolved attribute. We rewrite the
+        resolved statement in-place and return the original LambdaElement.
+
+        Supports both StatementLambdaElement (basic lambda_stmt) and
+        LinkedLambdaElement (chained lambda operations).
+        """
+        # Get the resolved statement - this is the actual Select/CompoundSelect
+        resolved = stmt._resolved
+
+        # Rewrite based on the type of the resolved statement
+        if isinstance(resolved, Select):
+            stmt._resolved = self.rewrite_select(resolved)
+        elif isinstance(resolved, CompoundSelect):
+            stmt._resolved = self.rewrite_compound_select(resolved)
+        else:
+            raise NotImplementedError(f'Unsupported statement type "{type(resolved)}" inside LambdaElement._resolved')
+
+        return stmt
 
     def rewrite_select(self, stmt: Select) -> Select:
         """Rewrite a Select Statement."""
