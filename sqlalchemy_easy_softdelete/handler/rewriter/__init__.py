@@ -84,24 +84,24 @@ class SoftDeleteQueryRewriter:
         from sqlalchemy.orm import with_loader_criteria
 
         # Check if the statement has ORM with_options (eager loading)
-        if not hasattr(stmt, '_with_options') or not stmt._with_options:
+        if not hasattr(stmt, "_with_options") or not stmt._with_options:
             return stmt
 
         # Collect all entity classes from the loading paths
         entities_to_filter = set()
 
         for opt in stmt._with_options:
-            if not hasattr(opt, 'path'):
+            if not hasattr(opt, "path"):
                 continue
 
             for path_element in opt.path:
                 # Get the entity class from mappers in the path
-                if hasattr(path_element, 'class_'):
+                if hasattr(path_element, "class_"):
                     entity_class = path_element.class_
                     # Check if this entity has the soft-delete column
                     if hasattr(entity_class, self.deleted_field_name):
                         # Check if the table is in the ignored list
-                        if hasattr(entity_class, '__table__'):
+                        if hasattr(entity_class, "__table__"):
                             table = entity_class.__table__
                             if any(ignored.match_name(table) for ignored in self.ignored_tables):
                                 continue

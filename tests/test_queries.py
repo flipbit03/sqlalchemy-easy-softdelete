@@ -236,9 +236,7 @@ def test_query_with_joinedload_filters_soft_deleted(seeded_session, rewriter):
     and these subqueries must also have soft-delete filters applied.
     """
     # Query parent with eagerly loaded children using joinedload
-    parent = seeded_session.query(SDParent).options(
-        joinedload(SDParent.children)
-    ).filter(SDParent.id == 1000).first()
+    parent = seeded_session.query(SDParent).options(joinedload(SDParent.children)).filter(SDParent.id == 1000).first()
 
     # Parent should exist
     assert parent is not None
