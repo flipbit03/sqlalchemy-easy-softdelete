@@ -1,6 +1,6 @@
 sources = sqlalchemy_easy_softdelete
 
-.PHONY: lint typecheck test test-pg test-all coverage clean dev pg pg-stop python-versions
+.PHONY: lint typecheck test test-pg test-all-pg coverage clean dev pg pg-stop python-versions
 
 # Run linting (ruff)
 lint:
@@ -20,7 +20,7 @@ test-pg:
 
 # Full test matrix with PostgreSQL (like CI)
 # Runs all Python versions × SQLAlchemy versions against PostgreSQL
-test-all: pg
+test-all-pg: pg
 	@echo "Running full test matrix against PostgreSQL..."
 	TEST_CONNECTION_STRING=postgresql://postgres:postgres@localhost:9991/test_db uv run nox
 

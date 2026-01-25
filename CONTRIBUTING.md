@@ -46,7 +46,7 @@ make pg-stop   # Stop PostgreSQL when done
 ### Full CI test matrix (all Python versions × SQLAlchemy versions)
 
 ```bash
-make test-all
+make test-all-pg
 ```
 
 ### Test a specific Python version
@@ -73,7 +73,7 @@ make typecheck
 
 ## Pull Request Process
 
-1. Ensure all tests pass: `make test-all`
+1. Ensure all tests pass: `make test-all-pg`
 2. Ensure linting passes: `make lint`
 3. Ensure type checking passes: `make typecheck`
 4. Update documentation if needed
@@ -88,7 +88,7 @@ make typecheck
 | `make typecheck` | Run type checking (mypy) |
 | `make test` | Quick test with SQLite |
 | `make test-pg` | Test with PostgreSQL |
-| `make test-all` | Full CI test matrix |
+| `make test-all-pg` | Full CI test matrix |
 | `make test-py version=X.Y` | Test specific Python version |
 | `make pg` | Start PostgreSQL |
 | `make pg-stop` | Stop PostgreSQL |
