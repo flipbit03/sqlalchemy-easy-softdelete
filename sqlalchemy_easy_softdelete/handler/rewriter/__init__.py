@@ -89,8 +89,10 @@ class SoftDeleteQueryRewriter:
             stmt._resolved = self.rewrite_select(resolved)
         elif isinstance(resolved, CompoundSelect):
             stmt._resolved = self.rewrite_compound_select(resolved)
-        # Note: LambdaElement._resolved is typically Select or CompoundSelect
-        # If other types appear, they will be handled by the next execution
+        else:
+            raise NotImplementedError(
+                f'Unsupported statement type "{type(resolved)}" inside LambdaElement._resolved'
+            )
 
         return stmt
 
