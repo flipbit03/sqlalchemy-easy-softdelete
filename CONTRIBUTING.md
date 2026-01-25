@@ -88,7 +88,7 @@ make typecheck
 | `make typecheck` | Run type checking (mypy) |
 | `make test` | Quick test with SQLite |
 | `make test-pg` | Test with PostgreSQL |
-| `make test-all-pg` | Full CI test matrix |
+| `make test-all-pg` | Full CI test matrix (with PostgreSQL) |
 | `make test-py version=X.Y` | Test specific Python version |
 | `make pg` | Start PostgreSQL |
 | `make pg-stop` | Stop PostgreSQL |
