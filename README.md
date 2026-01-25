@@ -1,11 +1,10 @@
 # SQLAlchemy Easy Soft-Delete
 
-[![pypi](https://img.shields.io/pypi/v/sqlalchemy-easy-softdelete.svg)](https://pypi.org/project/sqlalchemy-easy-softdelete/)
-[![python](https://img.shields.io/pypi/pyversions/sqlalchemy-easy-softdelete.svg)](https://pypi.org/project/sqlalchemy-easy-softdelete/)
-[![Build Status](https://github.com/flipbit03/sqlalchemy-easy-softdelete/actions/workflows/test_matrix.yml/badge.svg)](https://github.com/flipbit03/sqlalchemy-easy-softdelete/actions/workflows/test.yml)
+[![PyPI - Python Version](https://img.shields.io/pypi/pyversions/sqlalchemy-easy-softdelete)](https://pypi.org/project/sqlalchemy-easy-softdelete/)
+[![PyPI - Version](https://img.shields.io/pypi/v/sqlalchemy-easy-softdelete)](https://pypi.org/project/sqlalchemy-easy-softdelete/)
+[![PyPI - Types](https://img.shields.io/pypi/types/sqlalchemy-easy-softdelete)](https://pypi.org/project/sqlalchemy-easy-softdelete/)
+[![PyPI - Downloads](https://img.shields.io/pypi/dm/sqlalchemy-easy-softdelete)](https://pypi.org/project/sqlalchemy-easy-softdelete/)
 ![Supported SQLAlchemy Versions](https://img.shields.io/badge/SQLAlchemy-1.4%20%2F%202.0-brightgreen)
-
-[//]: # ([![codecov]&#40;https://codecov.io/gh/flipbit03/sqlalchemy-easy-softdelete/branch/main/graphs/badge.svg&#41;]&#40;https://codecov.io/github/flipbit03/sqlalchemy-easy-softdelete&#41;)
 
 Easily add soft-deletion to your SQLAlchemy Models and automatically filter out soft-deleted objects from your queries and relationships.
 
@@ -61,10 +60,10 @@ all_fruits = session.query(Fruit).execution_options(include_deleted=True).all()
 ```
 Setting `include_deleted=True` (attribute name can be customized) in the query disables soft delete for that query.
 
-#### License
+### Contributing
+
+Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and guidelines.
+
+### License
 
 * BSD-3-Clause
-
-[//]: # (* Documentation: <https://flipbit03.github.io/sqlalchemy-easy-softdelete>)
-[//]: # (* GitHub: <https://github.com/flipbit03/sqlalchemy-easy-softdelete>)
-[//]: # (* PyPI: <https://pypi.org/project/sqlalchemy-easy-softdelete/>)

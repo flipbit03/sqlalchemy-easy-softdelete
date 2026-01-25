@@ -1,28 +1,5 @@
 services:
   ##############################
-  # Test Runner
-  ##############################
-  tests:
-    depends_on:
-      - pg
-    env_file:
-      - .env.docker
-    environment:
-      - PYTHONUNBUFFERED=1
-    build:
-      target: "testing_and_coverage"
-
-  ##############################
-  # Test Runner exporting Coverage information (for Github Actions)
-  ##############################
-  tests-with-coverage:
-    extends: "tests"
-
-    # Set up volume so that coverage information can be relayed back to the outside
-    volumes:
-      - "./:/library"
-
-  ##############################
   # PostgreSQL Instance
   ##############################
   pg:
@@ -35,6 +12,11 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: test_db
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
     logging:
       options:
         max-size: "1m"

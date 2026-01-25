@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TypeVar, Union
+from typing import Any, cast
 
 from sqlalchemy import Table
 from sqlalchemy.orm import FromStatement
@@ -12,7 +12,8 @@ from sqlalchemy.sql.elements import TextClause
 
 from sqlalchemy_easy_softdelete.hook import IgnoredTable
 
-Statement = TypeVar('Statement', bound=Union[Select, FromStatement, CompoundSelect, Executable])
+# Type alias for statements we can rewrite
+Statement = Select | FromStatement | CompoundSelect | Executable
 
 
 class SoftDeleteQueryRewriter:
@@ -60,7 +61,7 @@ class SoftDeleteQueryRewriter:
             stmt.element = self.rewrite_select(stmt.element)
             return stmt
 
-        raise NotImplementedError(f"Unsupported statement type \"{(type(stmt))}\"!")
+        raise NotImplementedError(f'Unsupported statement type "{(type(stmt))}"!')
 
     def rewrite_select(self, stmt: Select) -> Select:
         """Rewrite a Select Statement."""
@@ -80,7 +81,7 @@ class SoftDeleteQueryRewriter:
         # a direct reassignment because the reassignment would not substitute the
         # value which is inside the CompoundSelect "by reference"
         for i in range(len(stmt.selects)):
-            stmt.selects[i] = self.rewrite_select(stmt.selects[i])
+            stmt.selects[i] = self.rewrite_select(cast(Select[Any], stmt.selects[i]))
         return stmt
 
     def rewrite_element(self, subquery: Subquery) -> Subquery:
@@ -93,9 +94,9 @@ class SoftDeleteQueryRewriter:
             subquery.element = self.rewrite_select(subquery.element)
             return subquery
 
-        raise NotImplementedError(f"Unsupported object \"{(type(subquery.element))}\" in subquery.element")
+        raise NotImplementedError(f'Unsupported object "{(type(subquery.element))}" in subquery.element')
 
-    def rewrite_from_orm_join(self, stmt: Select, join_obj: Union[_ORMJoin, Join]) -> Select:
+    def rewrite_from_orm_join(self, stmt: Select, join_obj: _ORMJoin | Join) -> Select:
         """Handle multiple, and potentially recursive joins."""
 
         # Recursive cases (multiple joins)
@@ -138,10 +139,10 @@ class SoftDeleteQueryRewriter:
                 return stmt
 
             raise NotImplementedError(
-                f"Unsupported object \"{(type(from_obj.element))}\" inside Alias in " f"statement.froms"
+                f'Unsupported object "{(type(from_obj.element))}" inside Alias in statement.froms'
             )
 
-        raise NotImplementedError(f"Unsupported object \"{(type(from_obj))}\" in statement.froms")
+        raise NotImplementedError(f'Unsupported object "{(type(from_obj))}" in statement.froms')
 
     def rewrite_from_table(self, stmt: Select, table: Table) -> Select:
         """

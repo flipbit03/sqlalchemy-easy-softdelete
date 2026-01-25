@@ -3,16 +3,15 @@ Extracts SIMPLE SELECT STATEMENTS from a query
 
 We consider SIMPLE SELECT STATEMENTS to be those that their froms are tables, and not subqueries.
 """
-from __future__ import annotations
 
-from typing import Union
+from __future__ import annotations
 
 from sqlalchemy.orm.util import _ORMJoin
 from sqlalchemy.sql.schema import Table
 from sqlalchemy.sql.selectable import CompoundSelect, Join, Select, SelectBase, Subquery
 
 
-def is_simple_join(j: Union[Join, _ORMJoin]) -> bool:
+def is_simple_join(j: Join | _ORMJoin) -> bool:
     left_simple, right_simple = False, False
 
     if isinstance(j.left, Table):
@@ -28,7 +27,7 @@ def is_simple_join(j: Union[Join, _ORMJoin]) -> bool:
     return left_simple and right_simple
 
 
-def is_simple_select(s: Union[Select, Subquery, CompoundSelect]) -> bool:
+def is_simple_select(s: Select | Subquery | CompoundSelect) -> bool:
     if isinstance(s, CompoundSelect):
         return False
 
@@ -37,7 +36,7 @@ def is_simple_select(s: Union[Select, Subquery, CompoundSelect]) -> bool:
 
     final_froms = s.get_final_froms()
     if not isinstance(final_froms, list):
-        raise NotImplementedError(f"statement.froms is not a list! type -> \"{(type(s.froms))}\"!")
+        raise NotImplementedError(f'statement.froms is not a list! type -> "{(type(s.froms))}"!')
 
     for from_obj in final_froms:
         if isinstance(from_obj, Table):
@@ -49,7 +48,7 @@ def is_simple_select(s: Union[Select, Subquery, CompoundSelect]) -> bool:
                 continue
             return False
         else:
-            raise NotImplementedError(f"Unsupported froms type \"{(type(from_obj))}\"!")
+            raise NotImplementedError(f'Unsupported froms type "{(type(from_obj))}"!')
 
     return True
 
@@ -70,4 +69,4 @@ def extract_simple_selects(statement: Select | CompoundSelect | SelectBase) -> l
         elif isinstance(from_obj, Subquery):
             return extract_simple_selects(from_obj.element)
 
-    raise NotImplementedError(f"Should not reach this point! statement.froms -> \"{statement.froms}\"!")
+    raise NotImplementedError(f'Should not reach this point! statement.froms -> "{statement.froms}"!')

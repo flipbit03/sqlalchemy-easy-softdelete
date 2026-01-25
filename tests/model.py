@@ -23,7 +23,7 @@ class TestModelBase:
 class SoftDeleteMixin(
     generate_soft_delete_mixin_class(
         ignored_tables=[
-            IgnoredTable(table_schema=None, name='sdtablethatshouldnotbesoftdeleted'),
+            IgnoredTable(table_schema=None, name="sdtablethatshouldnotbesoftdeleted"),
         ],
     )
 ):
@@ -40,7 +40,7 @@ class SDSimpleTable(TestModelBase, SoftDeleteMixin):
 
 class SDParent(TestModelBase, SoftDeleteMixin):
     __allow_unmapped__ = True
-    children: 'List[SDChild]' = relationship('SDChild')
+    children: "List[SDChild]" = relationship("SDChild")  # noqa: UP006
 
     def __repr__(self):
         return f"<{self.__class__.__name__} id={self.id} deleted={bool(self.deleted_at)}>"
@@ -48,10 +48,10 @@ class SDParent(TestModelBase, SoftDeleteMixin):
 
 class SDChild(TestModelBase, SoftDeleteMixin):
     __allow_unmapped__ = True
-    parent_id = Column(Integer, ForeignKey(f'{SDParent.__tablename__}.id'), nullable=False)
-    parent: SDParent = relationship('SDParent', back_populates="children")
+    parent_id = Column(Integer, ForeignKey(f"{SDParent.__tablename__}.id"), nullable=False)
+    parent: SDParent = relationship("SDParent", back_populates="children")
 
-    child_children: 'List[SDChildChild]' = relationship('SDChildChild')
+    child_children: "List[SDChildChild]" = relationship("SDChildChild")  # noqa: UP006
 
     def __repr__(self):
         pid = f"(parent_id={self.parent_id})"
@@ -62,8 +62,8 @@ class SDChild(TestModelBase, SoftDeleteMixin):
 class SDChildChild(TestModelBase, SoftDeleteMixin):
     __allow_unmapped__ = True
 
-    child_id = Column(Integer, ForeignKey(f'{SDChild.__tablename__}.id'), nullable=False)
-    child: SDChild = relationship('SDChild', back_populates="child_children")
+    child_id = Column(Integer, ForeignKey(f"{SDChild.__tablename__}.id"), nullable=False)
+    child: SDChild = relationship("SDChild", back_populates="child_children")
 
     def __repr__(self):
         pid = f"(child_id={self.child_id})"

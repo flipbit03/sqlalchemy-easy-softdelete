@@ -1,0 +1,87 @@
+# serializer version: 1
+# name: test_ensure_aggregate_from_multiple_table_deletion_works_active_object_count
+  1
+# ---
+# name: test_ensure_table_with_inheritance_works
+  list([
+    '<SDDerivedRequest id=1000>',
+    '<SDDerivedRequest id=1001>',
+  ])
+# ---
+# name: test_ensure_table_with_inheritance_works.1
+  list([
+    '<SDDerivedRequest id=1000>',
+    '<SDDerivedRequest id=1001>',
+    '<SDDerivedRequest id=1002>',
+  ])
+# ---
+# name: test_query_single_table
+  list([
+    '<SDChild id=100000 deleted=False (parent_id=1000)>',
+    '<SDChild id=100001 deleted=False (parent_id=1000)>',
+    '<SDChild id=100002 deleted=False (parent_id=1000)>',
+    '<SDChild id=100003 deleted=False (parent_id=1000)>',
+    '<SDChild id=100100 deleted=False (parent_id=1001)>',
+    '<SDChild id=100200 deleted=False (parent_id=1002)>',
+    '<SDChild id=100201 deleted=False (parent_id=1002)>',
+    '<SDChild id=100202 deleted=False (parent_id=1002)>',
+    '<SDChild id=100203 deleted=False (parent_id=1002)>',
+    '<SDChild id=100204 deleted=False (parent_id=1002)>',
+  ])
+# ---
+# name: test_query_union_sdchild
+  list([
+    '<SDChild id=100000 deleted=False (parent_id=1000)>',
+    '<SDChild id=100001 deleted=False (parent_id=1000)>',
+    '<SDChild id=100002 deleted=False (parent_id=1000)>',
+    '<SDChild id=100003 deleted=False (parent_id=1000)>',
+    '<SDChild id=100100 deleted=False (parent_id=1001)>',
+    '<SDChild id=100200 deleted=False (parent_id=1002)>',
+    '<SDChild id=100201 deleted=False (parent_id=1002)>',
+    '<SDChild id=100202 deleted=False (parent_id=1002)>',
+    '<SDChild id=100203 deleted=False (parent_id=1002)>',
+    '<SDChild id=100204 deleted=False (parent_id=1002)>',
+  ])
+# ---
+# name: test_query_with_join
+  list([
+    '<SDChild id=100000 deleted=False (parent_id=1000)>',
+    '<SDChild id=100001 deleted=False (parent_id=1000)>',
+    '<SDChild id=100002 deleted=False (parent_id=1000)>',
+    '<SDChild id=100003 deleted=False (parent_id=1000)>',
+    '<SDChild id=100100 deleted=False (parent_id=1001)>',
+  ])
+# ---
+# name: test_query_with_table_clause_as_table
+  '''
+  SELECT id
+  FROM sdderivedrequest
+  '''
+# ---
+# name: test_query_with_text_clause_as_table
+  '''
+  SELECT id
+  FROM sdderivedrequest
+  '''
+# ---
+# name: test_query_with_union_but_union_softdelete_disabled
+  list([
+    '<SDChild id=100000 deleted=False (parent_id=1000)>',
+    '<SDChild id=100001 deleted=False (parent_id=1000)>',
+    '<SDChild id=100002 deleted=False (parent_id=1000)>',
+    '<SDChild id=100003 deleted=False (parent_id=1000)>',
+    '<SDChild id=100004 deleted=True (parent_id=1000)>',
+    '<SDChild id=100100 deleted=False (parent_id=1001)>',
+    '<SDChild id=100101 deleted=True (parent_id=1001)>',
+    '<SDChild id=100102 deleted=True (parent_id=1001)>',
+    '<SDChild id=100200 deleted=False (parent_id=1002)>',
+    '<SDChild id=100201 deleted=False (parent_id=1002)>',
+    '<SDChild id=100202 deleted=False (parent_id=1002)>',
+    '<SDChild id=100203 deleted=False (parent_id=1002)>',
+    '<SDChild id=100204 deleted=False (parent_id=1002)>',
+    '<SDChild id=100205 deleted=True (parent_id=1002)>',
+    '<SDChild id=100206 deleted=True (parent_id=1002)>',
+    '<SDChild id=100207 deleted=True (parent_id=1002)>',
+    '<SDChild id=100208 deleted=True (parent_id=1002)>',
+  ])
+# ---

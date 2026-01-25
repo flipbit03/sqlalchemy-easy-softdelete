@@ -1,75 +1,55 @@
-[tool]
-[tool.poetry]
+[project]
 name = "sqlalchemy-easy-softdelete"
-version = "0.8.3"
-homepage = "https://github.com/flipbit03/sqlalchemy-easy-softdelete"
+version = "0.0.0"
 description = "Easily add soft-deletion to your SQLAlchemy Models."
-authors = ["Cadu <cadu.coelho@gmail.com>"]
+authors = [
+    {name = "Cadu", email = "cadu.coelho@gmail.com"}
+]
+license = "BSD-3-Clause"
 readme = "README.md"
-license =  "BSD-3-Clause"
-classifiers=[
-    'Development Status :: 5 - Production/Stable',
-    'Intended Audience :: Developers',
-    'License :: OSI Approved :: BSD License',
-    'Natural Language :: English',
-    'Programming Language :: Python :: 3.10',
+requires-python = ">=3.10"
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: BSD License",
+    "Natural Language :: English",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Typing :: Typed",
 ]
-packages = [
-    { include = "sqlalchemy_easy_softdelete" },
-    { include = "tests", format = "sdist" },
+dependencies = [
+    "SQLAlchemy>=1.4,<2.1",
 ]
 
-[tool.poetry.dependencies]
-python = ">=3.9,<4.0"
-SQLAlchemy = ">=1.4,<2.1"
+[project.urls]
+homepage = "https://github.com/flipbit03/sqlalchemy-easy-softdelete"
+source = "https://github.com/flipbit03/sqlalchemy-easy-softdelete"
+issues = "https://github.com/flipbit03/sqlalchemy-easy-softdelete/issues"
 
-[tool.poetry.group.dev.dependencies]
-snapshottest = "*"
-psycopg2 = "^2.9.4"
-nox = "^2023.4.22"
-black = "^21.5b2"
-isort = "^5.8.0"
-flake8 = "^3.9.2"
-flake8-docstrings = "^1.6.0"
-pytest = "^6.2.4"
-pytest-cov = "^2.12.0"
-virtualenv = "^20.2.2"
-pre-commit = "^2.12.0"
-bump2version = "^1.0.1"
-pip = "*"
-sqlparse = "^0.4.4"
-
-[tool.black]
-line-length = 120
-skip-string-normalization = true
-target-version = ['py310']
-include = '\.pyi?$'
-exclude = '''
-/(
-    \.eggs
-  | \.git
-  | \.hg
-  | \.mypy_cache
-  | \.tox
-  | \.venv
-  | _build
-  | buck-out
-  | build
-  | dist
-)/
-'''
-
-[tool.isort]
-multi_line_output = 3
-include_trailing_comma = true
-force_grid_wrap = 0
-use_parentheses = true
-ensure_newline_before_comments = true
-line_length = 120
-skip_gitignore = true
-# you can skip files as below
-#skip_glob = docs/conf.py
+[dependency-groups]
+dev = [
+    "pytest>=8.3.4",
+    "pytest-cov>=6.0.0",
+    "pre-commit>=4.0.1",
+    "nox>=2024.10.9",
+    "syrupy>=4.8.0",
+    "mypy>=1.19.1",
+    "ruff>=0.14.14",
+    "psycopg2-binary>=2.9.0",
+]
 
 [build-system]
-requires = ["poetry-core>=1.0.0"]
-build-backend = "poetry.core.masonry.api"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "sqlalchemy_easy_softdelete",
+    "tests",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["sqlalchemy_easy_softdelete"]

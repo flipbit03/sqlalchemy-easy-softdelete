@@ -1,0 +1,71 @@
+line-length = 120
+target-version = "py310"
+
+src = ["sqlalchemy_easy_softdelete", "tests"]
+
+lint.select = [
+    "E", # pycodestyle errors
+    "B", # flake8-bugbear
+    "W", # pycodestyle warnings
+    "F", # pyflakes
+    "N", # PEP 8 naming conventions
+    "I", # isort
+    "UP", # pyupgrade
+]
+
+lint.ignore = [
+    "E402", # module level import not at top of file
+    "E501", # line length
+    "F403", # from module import * used; unable to detect undefined names
+    "F405", # name may be undefined, or defined from star imports: module
+    "B008", # do not perform function calls in argument defaults
+    "B905", # `zip()` without an explicit `strict=` parameter
+    "UP035", # deprecated-import - Import from {target} instead
+    "UP017", # Use alias
+    "N805", # First argument of a method should be named `self`
+    "N811", # Constant imported as non-constant
+    "N815", # mixedCase variable in class scope
+]
+
+lint.fixable = ["A", "B", "C", "D", "E", "F", "G", "I", "N", "Q", "S", "T", "W", "ANN", "ARG", "BLE", "COM", "DJ", "DTZ", "EM", "ERA", "EXE", "FBT", "ICN", "INP", "ISC", "NPY", "PD", "PGH", "PIE", "PL", "PT", "PTH", "PYI", "RET", "RSE", "RUF", "SIM", "SLF", "TCH", "TID", "TRY", "UP", "YTT"]
+lint.unfixable = []
+
+exclude = [
+    ".bzr",
+    ".direnv",
+    ".eggs",
+    ".git",
+    ".git-rewrite",
+    ".hg",
+    ".mypy_cache",
+    ".nox",
+    ".pants.d",
+    ".pytype",
+    ".ruff_cache",
+    ".svn",
+    ".tox",
+    ".venv",
+    "__pypackages__",
+    "_build",
+    "buck-out",
+    "build",
+    "dist",
+    "node_modules",
+    "venv",
+    "tests/snapshots",
+]
+
+lint.dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
+
+[lint.mccabe]
+max-complexity = 10
+
+[lint.isort]
+known-first-party = ["sqlalchemy_easy_softdelete"]
+
+[format]
+preview = true
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
