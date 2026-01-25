@@ -35,7 +35,7 @@ dev = [
     "pytest-cov>=6.0.0",
     "pre-commit>=4.0.1",
     "nox>=2024.10.9",
-    "snapshottest>=0.6.0",
+    "syrupy>=4.8.0",
     "mypy>=1.19.1",
     "ruff>=0.14.14",
 ]

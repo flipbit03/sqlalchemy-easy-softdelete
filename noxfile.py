@@ -14,5 +14,5 @@ import nox
 def tests(session, sqla_version):
     session.install(f"SQLAlchemy=={sqla_version}")
     session.install("pytest")
-    session.install("snapshottest")
+    session.install("syrupy")
     session.run("pytest")
