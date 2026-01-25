@@ -3,7 +3,7 @@ import random
 
 from sqlalchemy.orm import Session
 
-from tests.model import SDChild, SDChildChild, SDParent
+from tests.default_config.model import SDChild, SDChildChild, SDParent
 
 TEST_EPOCH = datetime.datetime(year=1985, month=8, day=4)
 

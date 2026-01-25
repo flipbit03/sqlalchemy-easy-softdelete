@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
 
-from tests.model import SDDerivedRequest
+from tests.default_config.model import SDDerivedRequest
 
 
 def generate_table_with_inheritance_obj(s: Session, obj_id: int, deleted: bool = False):

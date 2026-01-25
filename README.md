@@ -27,7 +27,7 @@ pip install sqlalchemy-easy-softdelete
 ```py
 from sqlalchemy_easy_softdelete.mixin import generate_soft_delete_mixin_class
 from sqlalchemy_easy_softdelete.hook import IgnoredTable
-from sqlalchemy.orm import declarative_base
+from sqlalchemy.orm import declarative_base, Mapped
 from sqlalchemy import Column, Integer
 from datetime import datetime
 
@@ -37,8 +37,10 @@ class SoftDeleteMixin(generate_soft_delete_mixin_class(
     # even if the table has the soft-delete column
     ignored_tables=[IgnoredTable(table_schema="public", name="cars"),]
 )):
-    # type hint for autocomplete IDE support
-    deleted_at: datetime
+    # Type hint for IDE autocomplete and type checker support.
+    # Using Mapped[T | None] ensures type checkers understand this is a
+    # SQLAlchemy column that supports query operations like .where()
+    deleted_at: Mapped[datetime | None]
 
 # Apply the mixin to your Models
 Base = declarative_base()

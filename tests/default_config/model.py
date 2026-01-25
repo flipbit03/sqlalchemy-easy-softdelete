@@ -1,7 +1,7 @@
 from datetime import datetime
 
 from sqlalchemy import Column, DateTime, ForeignKey, Integer, String
-from sqlalchemy.orm import as_declarative, declared_attr, relationship
+from sqlalchemy.orm import Mapped, as_declarative, declared_attr, relationship
 
 from sqlalchemy_easy_softdelete.hook import IgnoredTable
 from sqlalchemy_easy_softdelete.mixin import generate_soft_delete_mixin_class
@@ -26,8 +26,18 @@ class SoftDeleteMixin(
         ],
     )
 ):
-    # for autocomplete
-    deleted_at: datetime
+    # Type hint for IDE autocomplete and type checker support.
+    # Using Mapped[T | None] ensures type checkers understand this is a
+    # SQLAlchemy column that supports query operations like .where()
+    deleted_at: Mapped[datetime | None]
+
+    # Optional: Add method stubs for delete/undelete if you want type hints for these.
+    # The actual implementations are provided by the generated mixin class.
+    def delete(self, v: datetime | None = None) -> None:
+        super().delete(v)  # type: ignore[misc]
+
+    def undelete(self) -> None:
+        super().undelete()  # type: ignore[misc]
 
 
 class SDSimpleTable(TestModelBase, SoftDeleteMixin):

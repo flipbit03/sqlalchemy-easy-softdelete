@@ -7,7 +7,7 @@ from sqlalchemy.orm.util import LoaderCriteriaOption
 from sqlalchemy.sql import CompoundSelect, Select
 from sqlalchemy.sql.lambdas import LambdaElement, LinkedLambdaElement, StatementLambdaElement
 
-from tests.model import (
+from tests.default_config.model import (
     SDBaseRequest,
     SDChild,
     SDChildChild,
