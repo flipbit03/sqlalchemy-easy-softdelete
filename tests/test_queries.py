@@ -2,7 +2,7 @@
 
 import pytest
 from sqlalchemy import func, insert, select, table, text
-from sqlalchemy.orm import Query
+from sqlalchemy.orm import Query, joinedload
 from sqlalchemy.sql import Select
 
 from tests.model import (
@@ -226,3 +226,25 @@ def test_query_with_same_field_as_softdelete_field_but_ignored(seeded_session, r
         )
         is False
     )
+
+
+def test_query_with_joinedload_filters_soft_deleted(seeded_session, rewriter):
+    """Test that joinedload properly filters soft-deleted related records.
+
+    This is a regression test for issue #33: Soft Deletion in Joined Subqueries.
+    When using joinedload(), SQLAlchemy creates subqueries in the JOIN clause,
+    and these subqueries must also have soft-delete filters applied.
+    """
+    # Query parent with eagerly loaded children using joinedload
+    parent = seeded_session.query(SDParent).options(
+        joinedload(SDParent.children)
+    ).filter(SDParent.id == 1000).first()
+
+    # Parent should exist
+    assert parent is not None
+    assert parent.id == 1000
+
+    # All loaded children should be non-deleted (deleted_at should be None)
+    # This verifies that the soft-delete filter was applied to the joinedload subquery
+    for child in parent.children:
+        assert child.deleted_at is None, f"Child {child.id} should not be deleted but has deleted_at={child.deleted_at}"

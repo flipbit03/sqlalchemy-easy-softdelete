@@ -70,8 +70,53 @@ class SoftDeleteQueryRewriter:
         if stmt.get_execution_options().get(self.disable_soft_delete_option_name):
             return stmt
 
+        # Handle eager loading (joinedload, subqueryload, etc.) by adding loader criteria
+        # This ensures soft-delete filters are applied to JOINed aliases
+        stmt = self._add_loader_criteria_for_eager_loads(stmt)
+
         for from_obj in stmt.get_final_froms():
             stmt = self.analyze_from(stmt, from_obj)
+
+        return stmt
+
+    def _add_loader_criteria_for_eager_loads(self, stmt: Select) -> Select:
+        """Add with_loader_criteria for entities loaded via eager loading options."""
+        from sqlalchemy.orm import with_loader_criteria
+
+        # Check if the statement has ORM with_options (eager loading)
+        if not hasattr(stmt, '_with_options') or not stmt._with_options:
+            return stmt
+
+        # Collect all entity classes from the loading paths
+        entities_to_filter = set()
+
+        for opt in stmt._with_options:
+            if not hasattr(opt, 'path'):
+                continue
+
+            for path_element in opt.path:
+                # Get the entity class from mappers in the path
+                if hasattr(path_element, 'class_'):
+                    entity_class = path_element.class_
+                    # Check if this entity has the soft-delete column
+                    if hasattr(entity_class, self.deleted_field_name):
+                        # Check if the table is in the ignored list
+                        if hasattr(entity_class, '__table__'):
+                            table = entity_class.__table__
+                            if any(ignored.match_name(table) for ignored in self.ignored_tables):
+                                continue
+                        entities_to_filter.add(entity_class)
+
+        # Add with_loader_criteria for each entity
+        for entity_class in entities_to_filter:
+            deleted_attr = getattr(entity_class, self.deleted_field_name)
+            stmt = stmt.options(
+                with_loader_criteria(
+                    entity_class,
+                    deleted_attr.is_(None),
+                    include_aliases=True,
+                )
+            )
 
         return stmt
 
@@ -105,6 +150,13 @@ class SoftDeleteQueryRewriter:
 
         if isinstance(join_obj.right, _ORMJoin) or isinstance(join_obj.right, Join):
             stmt = self.rewrite_from_orm_join(stmt, join_obj.right)
+
+        # Handle Subqueries (e.g., from subquery joins)
+        if isinstance(join_obj.left, Subquery):
+            self.rewrite_element(join_obj.left)
+
+        if isinstance(join_obj.right, Subquery):
+            self.rewrite_element(join_obj.right)
 
         # Normal cases - Tables
         if isinstance(join_obj.left, Table):
