@@ -5,7 +5,9 @@ from __future__ import annotations
 from typing import Any, cast
 
 from sqlalchemy import Table
-from sqlalchemy.orm import FromStatement
+from sqlalchemy.orm import FromStatement, Mapper, RelationshipProperty, with_loader_criteria
+from sqlalchemy.orm.attributes import InstrumentedAttribute
+from sqlalchemy.orm.strategy_options import Load
 from sqlalchemy.orm.util import _ORMJoin
 from sqlalchemy.sql import Alias, CompoundSelect, Executable, Join, Select, Subquery, TableClause
 from sqlalchemy.sql.elements import TextClause
@@ -70,10 +72,92 @@ class SoftDeleteQueryRewriter:
         if stmt.get_execution_options().get(self.disable_soft_delete_option_name):
             return stmt
 
+        # Handle eager loading (joinedload, subqueryload, etc.) by adding loader criteria
+        # This ensures soft-delete filters are applied to JOINed aliases
+        stmt = self._add_loader_criteria_for_eager_loads(stmt)
+
         for from_obj in stmt.get_final_froms():
             stmt = self.analyze_from(stmt, from_obj)
 
         return stmt
+
+    def _add_loader_criteria_for_eager_loads(self, stmt: Select) -> Select:
+        """Add with_loader_criteria for entities loaded via eager loading options.
+
+        Handles both SQLAlchemy 1.4 and 2.0 structures:
+        - 1.4: opt.path is a tuple of InstrumentedAttribute, entity via property.mapper.class_
+        - 2.0: opt.path is SlotsEntityRegistry with Mapper objects, entity via class_
+        """
+        # Access _with_options - an internal attribute for ORM loader options.
+        # This is part of SQLAlchemy's _traverse_internals (dp_executable_options),
+        # meaning it's stable across versions. There is no public API to read options.
+        if not stmt._with_options:
+            return stmt
+
+        # Collect all entity classes from the loading paths
+        entities_to_filter: set[type] = set()
+
+        for opt in stmt._with_options:
+            # Only process Load options (covers Load, _UnboundLoad in 1.4)
+            if not isinstance(opt, Load):
+                continue
+
+            # Load.path is a public attribute containing the entity/relationship path
+            path = opt.path
+            if path is None:
+                continue
+
+            # PathRegistry is iterable at runtime but not typed as such
+            for path_element in path:  # type: ignore[attr-defined]
+                entity_class = self._extract_entity_class_from_path_element(path_element)
+                if entity_class is None:
+                    continue
+
+                # Check if this entity has the soft-delete column
+                if not hasattr(entity_class, self.deleted_field_name):
+                    continue
+
+                # Check if the table is in the ignored list
+                table = getattr(entity_class, "__table__", None)
+                if isinstance(table, Table):
+                    if any(ignored.match_name(table) for ignored in self.ignored_tables):
+                        continue
+
+                entities_to_filter.add(entity_class)
+
+        # Add with_loader_criteria for each entity
+        for entity_class in entities_to_filter:
+            deleted_attr = getattr(entity_class, self.deleted_field_name)
+            stmt = stmt.options(
+                with_loader_criteria(
+                    entity_class,
+                    deleted_attr.is_(None),
+                    include_aliases=True,
+                )
+            )
+
+        return stmt
+
+    def _extract_entity_class_from_path_element(self, path_element: Any) -> type | None:
+        """Extract the entity class from a path element.
+
+        Handles both SQLAlchemy 1.4 and 2.0 structures:
+        - 1.4: InstrumentedAttribute -> property.mapper.class_
+        - 2.0: Mapper -> class_
+        """
+        # SQLAlchemy 2.0: Mapper objects have class_ directly
+        if isinstance(path_element, Mapper):
+            return path_element.class_
+
+        # SQLAlchemy 1.4: InstrumentedAttribute -> property.mapper.class_
+        if isinstance(path_element, InstrumentedAttribute):
+            prop = path_element.property
+            if isinstance(prop, RelationshipProperty):
+                mapper = prop.mapper
+                if isinstance(mapper, Mapper):
+                    return mapper.class_
+
+        return None
 
     def rewrite_compound_select(self, stmt: CompoundSelect) -> CompoundSelect:
         """Rewrite a Compound Select Statement."""
@@ -105,6 +189,13 @@ class SoftDeleteQueryRewriter:
 
         if isinstance(join_obj.right, _ORMJoin) or isinstance(join_obj.right, Join):
             stmt = self.rewrite_from_orm_join(stmt, join_obj.right)
+
+        # Handle Subqueries (e.g., from subquery joins)
+        if isinstance(join_obj.left, Subquery):
+            self.rewrite_element(join_obj.left)
+
+        if isinstance(join_obj.right, Subquery):
+            self.rewrite_element(join_obj.right)
 
         # Normal cases - Tables
         if isinstance(join_obj.left, Table):
