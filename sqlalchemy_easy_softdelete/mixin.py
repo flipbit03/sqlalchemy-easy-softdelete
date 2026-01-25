@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import Column, DateTime
@@ -21,7 +21,7 @@ def generate_soft_delete_mixin_class(
     disable_soft_delete_filtering_option_name: str = "include_deleted",
     generate_delete_method: bool = True,
     delete_method_name: str = "delete",
-    delete_method_default_value: Callable[[], Any] = lambda: datetime.utcnow(),
+    delete_method_default_value: Callable[[], Any] = lambda: datetime.now(timezone.utc),
     generate_undelete_method: bool = True,
     undelete_method_name: str = "undelete",
 ) -> type:
