@@ -1,8 +1,10 @@
 """Functions related to dynamic generation of the soft-delete mixin."""
+
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime
-from typing import Any, Callable, Optional, Type
+from typing import Any
 
 from sqlalchemy import Column, DateTime
 from sqlalchemy.sql.type_api import TypeEngine
@@ -22,16 +24,16 @@ def generate_soft_delete_mixin_class(
     delete_method_default_value: Callable[[], Any] = lambda: datetime.utcnow(),
     generate_undelete_method: bool = True,
     undelete_method_name: str = "undelete",
-) -> Type:
+) -> type:
     """Generate the actual soft-delete Mixin class."""
     if not ignored_tables:
         ignored_tables = []
 
-    class_attributes = {deleted_field_name: Column(deleted_field_name, deleted_field_type)}
+    class_attributes: dict[str, Any] = {deleted_field_name: Column(deleted_field_name, deleted_field_type)}
 
     if generate_delete_method:
 
-        def delete_method(_self, v: Optional[Any] = None):
+        def delete_method(_self, v: Any | None = None):
             setattr(_self, deleted_field_name, v or delete_method_default_value())
 
         class_attributes[delete_method_name] = delete_method

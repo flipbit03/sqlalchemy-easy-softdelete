@@ -1,5 +1,4 @@
 """Tests for `sqlalchemy_easy_softdelete` package."""
-from typing import List
 
 import pytest
 from sqlalchemy import func, insert, select, table, text
@@ -90,7 +89,7 @@ def test_query_with_union_but_union_softdelete_disabled(snapshot, seeded_session
 
     assert is_filtering_for_softdeleted(soft_deleted_rewritten_statement, {SDChild.__table__}) is True
 
-    all_children: List[SDChild] = seeded_session.query(SDChild).execution_options(include_deleted=True).all()
+    all_children: list[SDChild] = seeded_session.query(SDChild).execution_options(include_deleted=True).all()
 
     assert sorted(test_query.all(), key=lambda x: x.id) == sorted(all_children, key=lambda x: x.id)
 
@@ -134,23 +133,23 @@ def test_ensure_table_with_inheritance_works_query_base(snapshot, seeded_session
     """
 
     # Query the BASE entity, without joins.
-    test_query: Query = seeded_session.query(SDBaseRequest).filter(SDBaseRequest.request_type == 'sdderivedrequest')
+    test_query: Query = seeded_session.query(SDBaseRequest).filter(SDBaseRequest.request_type == "sdderivedrequest")
 
     request: SDDerivedRequest = test_query.first()
 
     try:
         # Accessing a field in a SDDerived Request will trigger an additional query with
         # a `FromStatement` as the statement, instead of a normal Select
-        request.derived_field
+        _ = request.derived_field
     except Exception as exc:
-        assert False, f"'Exception was raised {exc}"
+        raise AssertionError(f"Exception was raised {exc}") from exc
 
 
 def test_query_with_text_clause_as_table(snapshot, seeded_session, rewriter):
     """We cannot parse information from a literal text table name -- return unchanged"""
 
     # Table as a TextClause
-    test_query_text_clause: Select = select(text('id')).select_from(text("sdderivedrequest"))
+    test_query_text_clause: Select = select(text("id")).select_from(text("sdderivedrequest"))
     snapshot.assert_match(str(rewriter.rewrite_statement(test_query_text_clause)))
 
 
@@ -158,7 +157,7 @@ def test_query_with_table_clause_as_table(snapshot, seeded_session, rewriter):
     """We cannot parse information from a literal text table name -- return unchanged"""
 
     # Table as a TableClause
-    test_query_table_clause: Select = select(text('id')).select_from(table("sdderivedrequest"))
+    test_query_table_clause: Select = select(text("id")).select_from(table("sdderivedrequest"))
     snapshot.assert_match(str(rewriter.rewrite_statement(test_query_table_clause)))
 
 
@@ -167,7 +166,7 @@ def test_insert_with_returning(snapshot, seeded_session, rewriter, db_connection
     that means we need to actively protect against this case"""
 
     # RETURNING is not supported in SQLite
-    if db_connection.dialect.name == 'sqlite':
+    if db_connection.dialect.name == "sqlite":
         pytest.skip('SQLite does not support "INSERT...RETURNING"')
 
     insert_stmt = insert(SDSimpleTable).values(int_field=10).returning(SDSimpleTable)
@@ -182,7 +181,8 @@ def test_insert_with_returning(snapshot, seeded_session, rewriter, db_connection
 
 def test_query_with_more_than_one_join(snapshot, seeded_session, rewriter):
     test_query = (
-        seeded_session.query(SDParent)
+        seeded_session
+        .query(SDParent)
         .join(SDChild)
         .join(SDChildChild)
         .filter(

@@ -16,7 +16,7 @@ def extract_binary_expressions_from_where(whereclause) -> tuple[BinaryExpression
 
         return tuple(whereclause.clauses)
 
-    raise NotImplementedError(f"Unsupported whereclause type \"{(type(whereclause))}\"!")
+    raise NotImplementedError(f'Unsupported whereclause type "{(type(whereclause))}"!')
 
 
 def is_soft_delete_filter(b: BinaryExpression, tables: list[Table], deleted_field: str):

@@ -1,52 +1,46 @@
-# Publish package on main branch if it's tagged with 'v*'
-
 name: Publish to PyPI
 
-# Controls when the action will run.
+permissions:
+  id-token: write
+
 on:
-  # Triggers the workflow on push events but only for the master branch
-  push:
-    tags:
-      - 'v*'
+  release:
+    types: [published]
 
-  # Allows you to run this workflow manually from the Actions tab
-  workflow_dispatch:
-
-# A workflow run is made up of one or more jobs that can run sequentially or in parallel
 jobs:
-  # This workflow contains a single job called "release"
   release:
     name: Build and Publish
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-latest
 
-    strategy:
-      matrix:
-        python-versions: [3.10.1]
-
-    # Steps represent a sequence of tasks that will be executed as part of the job
     steps:
-      - uses: actions/checkout@v3
+      - name: Check out repository
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v2
-        with:
-          python-version: ${{ matrix.python-versions }}
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
 
-      - name: Install dependencies
+      - name: Set up Python
+        run: uv python install
+
+      - name: Set version from GITHUB_REF
         run: |
-          python -m pip install --upgrade pip
-          pip install poetry
+          # GITHUB_REF will be `refs/tags/v1.2.3` for a tag named "v1.2.3"
+          # we strip the `refs/tags/` part to get the version number
+          # we also strip "v" from the version number, if it exists, getting "1.2.3"
+          echo "GITHUB_REF: ${{ github.ref }}"
+          export VERSION=$(echo ${{ github.ref }} | sed -e 's,.*/\(.*\),\1,' -e 's/^v//')
+          echo Setting version to $VERSION
+          sed -i "s/^version = \"0.0.0\"/version = \"$VERSION\"/" pyproject.toml
+          echo "======================================"
+          echo "Version line in pyproject.toml:"
+          grep "^version" pyproject.toml
+          echo "======================================"
 
       - name: Build wheels and source tarball
-        run: >-
-          poetry build
+        run: uv build
 
       - name: show temporary files
-        run: >-
-          ls -l
+        run: ls -l
 
       - name: publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          user: __token__
-          password: ${{ secrets.PYPI_API_TOKEN }}
-          skip_existing: true
+        uses: pypa/gh-action-pypi-publish@v1.12.4

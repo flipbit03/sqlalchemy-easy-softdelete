@@ -1,5 +1,4 @@
 from dataclasses import dataclass
-from typing import Optional
 
 from sqlalchemy import Table
 
@@ -7,7 +6,7 @@ from sqlalchemy import Table
 @dataclass
 class IgnoredTable:
     name: str
-    table_schema: Optional[str] = None
+    table_schema: str | None = None
 
     def match_name(self, table: Table):
         # Table matches if the name and schema match
