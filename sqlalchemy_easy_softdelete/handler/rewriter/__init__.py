@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any, cast
 
 from sqlalchemy import Table
-from sqlalchemy.orm import FromStatement, Mapper, RelationshipProperty
+from sqlalchemy.orm import FromStatement, Mapper, RelationshipProperty, with_loader_criteria
 from sqlalchemy.orm.attributes import InstrumentedAttribute
 from sqlalchemy.orm.strategy_options import Load
 from sqlalchemy.orm.util import _ORMJoin
@@ -88,8 +88,6 @@ class SoftDeleteQueryRewriter:
         - 1.4: opt.path is a tuple of InstrumentedAttribute, entity via property.mapper.class_
         - 2.0: opt.path is SlotsEntityRegistry with Mapper objects, entity via class_
         """
-        from sqlalchemy.orm import with_loader_criteria
-
         # Access _with_options - an internal attribute for ORM loader options.
         # This is part of SQLAlchemy's _traverse_internals (dp_executable_options),
         # meaning it's stable across versions. There is no public API to read options.
