@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import List
 
 from sqlalchemy import Column, DateTime, ForeignKey, Integer, String
 from sqlalchemy.orm import as_declarative, declared_attr, relationship
@@ -39,7 +40,7 @@ class SDSimpleTable(TestModelBase, SoftDeleteMixin):
 
 class SDParent(TestModelBase, SoftDeleteMixin):
     __allow_unmapped__ = True
-    children: "list[SDChild]" = relationship("SDChild")
+    children: "List[SDChild]" = relationship("SDChild")  # noqa: UP006
 
     def __repr__(self):
         return f"<{self.__class__.__name__} id={self.id} deleted={bool(self.deleted_at)}>"
@@ -50,7 +51,7 @@ class SDChild(TestModelBase, SoftDeleteMixin):
     parent_id = Column(Integer, ForeignKey(f"{SDParent.__tablename__}.id"), nullable=False)
     parent: SDParent = relationship("SDParent", back_populates="children")
 
-    child_children: "list[SDChildChild]" = relationship("SDChildChild")
+    child_children: "List[SDChildChild]" = relationship("SDChildChild")  # noqa: UP006
 
     def __repr__(self):
         pid = f"(parent_id={self.parent_id})"
