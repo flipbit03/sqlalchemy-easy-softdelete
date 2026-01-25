@@ -90,22 +90,22 @@ class SoftDeleteQueryRewriter:
         """
         from sqlalchemy.orm import with_loader_criteria
 
-        # Check if the statement has ORM _with_options (eager loading options)
-        # This is an internal attribute but consistent across 1.4 and 2.0
-        with_options = getattr(stmt, "_with_options", None)
-        if not with_options:
+        # Access _with_options - an internal attribute for ORM loader options.
+        # This is part of SQLAlchemy's _traverse_internals (dp_executable_options),
+        # meaning it's stable across versions. There is no public API to read options.
+        if not stmt._with_options:
             return stmt
 
         # Collect all entity classes from the loading paths
         entities_to_filter: set[type] = set()
 
-        for opt in with_options:
+        for opt in stmt._with_options:
             # Only process Load options (covers Load, _UnboundLoad in 1.4)
             if not isinstance(opt, Load):
                 continue
 
-            # Get the path - this is consistent across versions
-            path = getattr(opt, "path", None)
+            # Load.path is a public attribute containing the entity/relationship path
+            path = opt.path
             if path is None:
                 continue
 
