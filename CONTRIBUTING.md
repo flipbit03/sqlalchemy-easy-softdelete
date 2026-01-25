@@ -49,10 +49,6 @@ make pg-stop   # Stop PostgreSQL when done
 make test-all
 ```
 
-This runs the same test matrix as CI:
-- Python 3.10, 3.11, 3.12: SQLAlchemy 2.0.46, 2.0.30, 2.0.10, 1.4.54
-- Python 3.13, 3.14: SQLAlchemy 2.0.46
-
 ### Test a specific Python version
 
 ```bash
