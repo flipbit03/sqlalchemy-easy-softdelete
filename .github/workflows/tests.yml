@@ -14,9 +14,21 @@ jobs:
       fail-fast: false
       matrix:
         python-version: [ "3.10", "3.11", "3.12", "3.13", "3.14" ]
+
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+
+      - name: Start PostgreSQL
+        run: docker compose up -d pg
+
+      - name: Wait for PostgreSQL to be healthy
+        run: |
+          echo "Waiting for PostgreSQL..."
+          until docker compose exec -T pg pg_isready -U postgres; do
+            sleep 2
+          done
+          echo "PostgreSQL is ready!"
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5
@@ -28,8 +40,10 @@ jobs:
         run: uv sync --all-groups
 
       - name: Run Tests
+        env:
+          TEST_CONNECTION_STRING: postgresql://postgres:postgres@localhost:9991/test_db
         run: uv run nox -p ${{ matrix.python-version }}
 
-      - name: Show Test Logs if tests failed
-        if: ${{ failure() }}
-        run: docker compose logs
+      - name: Stop PostgreSQL
+        if: always()
+        run: docker compose down

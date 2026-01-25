@@ -38,6 +38,7 @@ dev = [
     "syrupy>=4.8.0",
     "mypy>=1.19.1",
     "ruff>=0.14.14",
+    "psycopg2-binary>=2.9.0",
 ]
 
 [build-system]

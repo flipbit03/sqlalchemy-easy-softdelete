@@ -22,4 +22,5 @@ def tests(session):
         session.install(f"SQLAlchemy=={sqla_version}")
         session.install("pytest")
         session.install("syrupy")
+        session.install("psycopg2-binary")
         session.run("pytest", "-v", "--tb=short")
