@@ -7,7 +7,7 @@ import nox
     [
         "2.0.46",  # Latest 2.0.x
         "2.0.30",  # Mid 2.0.x
-        "2.0.0",  # First 2.0.x
+        "2.0.10",  # Early 2.0.x (2.0.0 lacks list[X] annotation support)
         "1.4.54",  # Latest 1.4.x (legacy support)
     ],
 )
