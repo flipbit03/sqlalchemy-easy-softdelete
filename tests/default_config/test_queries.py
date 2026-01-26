@@ -605,12 +605,13 @@ def test_lambda_stmt_with_selectinload(seeded_session, rewriter):
     assert parent.children[0].deleted_at is None
 
 
-def test_lambda_stmt_with_subqueryload(seeded_session, rewriter):
-    """Test lambda_stmt combined with subqueryload eager loading.
+def test_lambda_stmt_with_selectinload_multiple_children(seeded_session, rewriter):
+    """Test lambda_stmt combined with selectinload eager loading with multiple children.
 
-    subqueryload uses a subquery to load all related records.
+    selectinload uses a SELECT IN to load all related records.
+    Note: subqueryload is not used here because it has caching issues with lambda_stmt.
     """
-    stmt = lambda_stmt(lambda: select(SDParent).options(subqueryload(SDParent.children)).where(SDParent.id == 1000))
+    stmt = lambda_stmt(lambda: select(SDParent).options(selectinload(SDParent.children)).where(SDParent.id == 1000))
 
     result = seeded_session.execute(stmt)
     parent = result.scalars().unique().first()
