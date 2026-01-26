@@ -1,20 +1,20 @@
-import datetime
 import random
+from datetime import datetime, timedelta
 
 from sqlalchemy.orm import Session
 
-from tests.model import SDChild, SDChildChild, SDParent
+from tests.default_config.model import SDChild, SDChildChild, SDParent
 
-TEST_EPOCH = datetime.datetime(year=1985, month=8, day=4)
+TEST_EPOCH = datetime(year=1985, month=8, day=4)
 
 
 def pseudorandom_date(max_days: int = 3650) -> datetime:
-    return TEST_EPOCH + datetime.timedelta(days=random.randint(0, max_days))
+    return TEST_EPOCH + timedelta(days=random.randint(0, max_days))
 
 
 def generate_parent_child_object_hierarchy(
     s: Session, parent_id: int, min_children: int = 1, max_children: int = 5, parent_deleted: bool = False
-):
+) -> None:
     # Fix a seed in the RNG for deterministic outputs
     random.seed(parent_id)
 

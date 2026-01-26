@@ -9,16 +9,15 @@ from sqlalchemy.sql import Executable
 from sqlalchemy_easy_softdelete.handler.rewriter import SoftDeleteQueryRewriter
 from sqlalchemy_easy_softdelete.hook import IgnoredTable
 
-global_rewriter: SoftDeleteQueryRewriter | None = None
-
 
 def activate_soft_delete_hook(
     deleted_field_name: str, disable_soft_delete_option_name: str, ignored_tables: list[IgnoredTable]
-):
-    """Activate an event hook to rewrite the queries."""
+) -> SoftDeleteQueryRewriter:
+    """Activate an event hook to rewrite the queries.
 
-    global global_rewriter
-    global_rewriter = SoftDeleteQueryRewriter(
+    Returns the SoftDeleteQueryRewriter instance for use by the mixin class.
+    """
+    rewriter = SoftDeleteQueryRewriter(
         deleted_field_name=deleted_field_name,
         disable_soft_delete_option_name=disable_soft_delete_option_name,
         ignored_tables=ignored_tables,
@@ -30,10 +29,12 @@ def activate_soft_delete_hook(
         if not state.is_select:
             return
 
-        # Rewrite the statement
-        adapted = global_rewriter.rewrite_statement(state.statement)
+        # Rewrite the statement (closure captures local `rewriter`)
+        adapted = rewriter.rewrite_statement(state.statement)
 
         # Replace the statement
         # Cast needed because Statement type includes LambdaElement which mypy
         # doesn't recognize as Executable (even though it is at runtime)
         state.statement = cast(Executable, adapted)
+
+    return rewriter

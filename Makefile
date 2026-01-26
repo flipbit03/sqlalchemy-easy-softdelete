@@ -6,9 +6,9 @@ sources = sqlalchemy_easy_softdelete
 lint:
 	uv run pre-commit run --all-files
 
-# Run type checking (mypy)
+# Run type checking (mypy) on source code and tests
 typecheck:
-	uv run mypy $(sources)
+	uv run mypy $(sources) tests/
 
 # Quick test with SQLite (no docker needed)
 test:

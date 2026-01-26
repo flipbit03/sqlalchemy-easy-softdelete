@@ -1,6 +1,6 @@
 """Tests for `sqlalchemy_easy_softdelete` package."""
 
-from tests.model import SDChild, SDChildChild, SDParent
+from tests.default_config.model import SDChild, SDChildChild, SDParent
 
 
 def test_ensure_stable_seed_data(snapshot, seeded_session):

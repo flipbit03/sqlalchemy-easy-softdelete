@@ -6,9 +6,11 @@ We consider SIMPLE SELECT STATEMENTS to be those that their froms are tables, an
 
 from __future__ import annotations
 
+from typing import Any
+
 from sqlalchemy.orm.util import _ORMJoin
 from sqlalchemy.sql.schema import Table
-from sqlalchemy.sql.selectable import CompoundSelect, Join, Select, SelectBase, Subquery
+from sqlalchemy.sql.selectable import CompoundSelect, Join, Select, Subquery
 
 
 def is_simple_join(j: Join | _ORMJoin) -> bool:
@@ -27,7 +29,7 @@ def is_simple_join(j: Join | _ORMJoin) -> bool:
     return left_simple and right_simple
 
 
-def is_simple_select(s: Select | Subquery | CompoundSelect) -> bool:
+def is_simple_select(s: Select[Any] | Subquery | CompoundSelect[Any]) -> bool:
     if isinstance(s, CompoundSelect):
         return False
 
@@ -53,20 +55,20 @@ def is_simple_select(s: Select | Subquery | CompoundSelect) -> bool:
     return True
 
 
-def extract_simple_selects(statement: Select | CompoundSelect | SelectBase) -> list[SelectBase]:
+def extract_simple_selects(statement: Select[Any] | CompoundSelect[Any]) -> list[Select[Any]]:
     if is_simple_select(statement):
-        return [statement]
+        return [statement]  # type: ignore[list-item]  # We know it's a Select here
 
     if isinstance(statement, CompoundSelect):
-        extracted_elements = []
+        extracted_elements: list[Select[Any]] = []
         for select in statement.selects:
-            extracted_elements.extend(extract_simple_selects(select))
+            extracted_elements.extend(extract_simple_selects(select))  # type: ignore[arg-type]
         return extracted_elements
 
     for from_obj in statement.get_final_froms():
         if isinstance(from_obj, Table):
             continue
         elif isinstance(from_obj, Subquery):
-            return extract_simple_selects(from_obj.element)
+            return extract_simple_selects(from_obj.element)  # type: ignore[arg-type]  # element is Select
 
     raise NotImplementedError(f'Should not reach this point! statement.froms -> "{statement.froms}"!')

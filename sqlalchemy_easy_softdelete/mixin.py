@@ -45,7 +45,11 @@ def generate_soft_delete_mixin_class(
 
         class_attributes[undelete_method_name] = undelete_method
 
-    activate_soft_delete_hook(deleted_field_name, disable_soft_delete_filtering_option_name, ignored_tables)
+    # Activate the soft delete hook and get the rewriter instance
+    rewriter = activate_soft_delete_hook(deleted_field_name, disable_soft_delete_filtering_option_name, ignored_tables)
+
+    # Store rewriter on the generated class for testing purposes
+    class_attributes["_sqlalchemy_easy_softdelete_rewriter"] = rewriter
 
     generated_class = type(class_name, tuple(), class_attributes)
 

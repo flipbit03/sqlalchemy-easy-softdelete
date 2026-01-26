@@ -1,11 +1,13 @@
-from sqlalchemy.sql.elements import BinaryExpression, BooleanClauseList, Null
+from typing import Any
+
+from sqlalchemy.sql.elements import BinaryExpression, BooleanClauseList, ColumnElement, Null
 from sqlalchemy.sql.schema import Table
 from sqlalchemy.sql.selectable import Select
 
 from tests.utils.simple_select_extractor import extract_simple_selects
 
 
-def extract_binary_expressions_from_where(whereclause) -> tuple[BinaryExpression]:
+def extract_binary_expressions_from_where(whereclause: Any) -> tuple[ColumnElement[Any], ...]:
     if isinstance(whereclause, BinaryExpression):
         return (whereclause,)
 
@@ -14,16 +16,16 @@ def extract_binary_expressions_from_where(whereclause) -> tuple[BinaryExpression
         # Make sure we only have BinaryExpressions
         assert all(isinstance(c, BinaryExpression) for c in clauses)
 
-        return tuple(whereclause.clauses)
+        return clauses
 
     raise NotImplementedError(f'Unsupported whereclause type "{(type(whereclause))}"!')
 
 
-def is_soft_delete_filter(b: BinaryExpression, tables: list[Table], deleted_field: str):
+def is_soft_delete_filter(b: BinaryExpression[Any], tables: set[Table], deleted_field: str) -> bool:
     return b.left.table in tables and b.left.name == deleted_field and isinstance(b.right, Null)
 
 
-def is_simple_select_doing_soft_delete_filtering(stmt: Select, tables: set[Table], deleted_field: str) -> bool:
+def is_simple_select_doing_soft_delete_filtering(stmt: Select[Any], tables: set[Table], deleted_field: str) -> bool:
     # Check if query is disabled for soft-deletion
     opts = stmt.get_execution_options()
     if opts and opts.get("include_deleted"):
@@ -37,9 +39,11 @@ def is_simple_select_doing_soft_delete_filtering(stmt: Select, tables: set[Table
 
     binary_expressions = extract_binary_expressions_from_where(stmt.whereclause)
 
-    found_tables = set()
+    found_tables: set[Table] = set()
     for binary_expression in binary_expressions:
-        if is_soft_delete_filter(binary_expression, tables, deleted_field):
+        if isinstance(binary_expression, BinaryExpression) and is_soft_delete_filter(
+            binary_expression, tables, deleted_field
+        ):
             found_tables.add(binary_expression.left.table)
 
     if found_tables == tables:
@@ -48,7 +52,7 @@ def is_simple_select_doing_soft_delete_filtering(stmt: Select, tables: set[Table
     return False
 
 
-def is_filtering_for_softdeleted(statement: Select, tables: set[Table], deleted_field: str = "deleted_at") -> bool:
+def is_filtering_for_softdeleted(statement: Select[Any], tables: set[Table], deleted_field: str = "deleted_at") -> bool:
     selects = extract_simple_selects(statement)
 
     # Make sure all extracted selects are doing soft-delete filtering
