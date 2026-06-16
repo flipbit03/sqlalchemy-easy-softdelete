@@ -1016,6 +1016,13 @@ def test_orm_update_referencing_values_does_not_trip_rewriter(db_session, db_con
 
     That spawned SELECT carries the VALUES in its FROM; the rewriter must skip it
     (not crash with NotImplementedError) and the UPDATE must take effect.
+
+    We force ``synchronize_session="fetch"`` so the identity map is reconciled via
+    a spawned SELECT -- the exact indirect path this issue is about. This is also
+    required on SQLAlchemy 1.4, whose default ("evaluate") cannot evaluate a VALUES
+    column reference in Python and would raise UnevaluatableError before any SQL runs
+    (a SQLAlchemy limitation unrelated to the rewriter). 2.0's default already
+    resolves to "fetch".
     """
     # SQLite cannot execute UPDATE ... FROM (VALUES ...) (see CI: Postgres).
     if db_connection.dialect.name == "sqlite":
@@ -1026,7 +1033,10 @@ def test_orm_update_referencing_values_does_not_trip_rewriter(db_session, db_con
 
     v = values(column("k", Integer), column("nv", Integer), name="v").data([(1, 99)])
     db_session.execute(
-        update(SDSimpleTable).where(SDSimpleTable.id == v.c.k).values({SDSimpleTable.int_field: v.c.nv})
+        update(SDSimpleTable)
+        .where(SDSimpleTable.id == v.c.k)
+        .values({SDSimpleTable.int_field: v.c.nv})
+        .execution_options(synchronize_session="fetch"),
     )  # must not raise NotImplementedError
 
     # Row matched by the VALUES is updated; the other row is untouched.
