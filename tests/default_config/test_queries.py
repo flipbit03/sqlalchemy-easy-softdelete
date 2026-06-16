@@ -1,7 +1,8 @@
 """Tests for `sqlalchemy_easy_softdelete` package."""
 
 import pytest
-from sqlalchemy import func, insert, lambda_stmt, select, table, text
+from sqlalchemy import Integer, column, func, insert, lambda_stmt, select, table, text, update, values
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Query, joinedload, selectinload, subqueryload
 from sqlalchemy.orm.util import LoaderCriteriaOption
 from sqlalchemy.sql import CompoundSelect, Select
@@ -991,3 +992,64 @@ def test_lambda_stmt_nested_joinedload_adds_criteria_for_all_levels(rewriter):
     assert len(loader_criteria_options) >= 2, (
         f"Expected at least 2 LoaderCriteriaOption for nested eager loading, got {len(loader_criteria_options)}"
     )
+
+
+def test_select_with_top_level_values_from_is_not_rewritten(rewriter):
+    """A SELECT whose FROM is a VALUES construct must pass through untouched.
+
+    A VALUES (...) literal row set has no underlying table to soft-delete-filter,
+    so the rewriter must skip it instead of raising NotImplementedError.
+    """
+    v = values(column("k", Integer), name="myvals").data([(1,), (2,)])
+    stmt = select(v.c.k)
+
+    rewritten = rewriter.rewrite_statement(stmt)  # must not raise NotImplementedError
+
+    # The statement is returned untouched: no soft-delete WHERE clause was added.
+    assert rewritten.whereclause is None
+
+
+def test_orm_update_referencing_values_does_not_trip_rewriter(db_session):
+    """An ORM bulk UPDATE ... FROM (VALUES ...) emits a synchronize-session SELECT.
+
+    That spawned SELECT carries the VALUES in its FROM; the rewriter must skip it,
+    not crash with NotImplementedError.
+
+    Note: SQLite cannot actually execute `UPDATE ... FROM (VALUES ...)` (it only
+    accepts VALUES inside a CTE), so on SQLite the statement still raises an
+    OperationalError -- but that error originates in the database *after* the
+    rewriter has already passed the spawned SELECT through untouched, which is
+    exactly the regression we are guarding against. We therefore tolerate the
+    OperationalError and only fail on NotImplementedError.
+    """
+    db_session.add(SDSimpleTable(id=1, int_field=10))
+    db_session.flush()
+
+    v = values(column("k", Integer), column("nv", Integer), name="v").data([(1, 99)])
+    stmt = update(SDSimpleTable).where(SDSimpleTable.id == v.c.k).values({SDSimpleTable.int_field: v.c.nv})
+
+    try:
+        db_session.execute(stmt)
+    except NotImplementedError as exc:  # pragma: no cover - this is the bug we fixed
+        pytest.fail(f"rewriter must skip a Values FROM, not raise: {exc}")
+    except OperationalError:
+        # Backend (SQLite) can't run VALUES-in-FROM; the rewriter already did its job.
+        pass
+
+
+def test_table_alongside_values_is_still_soft_delete_filtered(rewriter):
+    """A soft-deletable table that appears alongside a top-level VALUES must still be rewritten.
+
+    With both a real table and a VALUES construct as top-level FROM entries, the
+    VALUES is skipped, but the real table still gets its `deleted_at IS NULL` filter.
+    """
+    v = values(column("k", Integer), name="myvals").data([(1,), (2,)])
+    stmt = select(SDSimpleTable.id, v.c.k)
+
+    rewritten = rewriter.rewrite_statement(stmt)
+    compiled_sql = str(rewritten)
+
+    # The real table is still soft-delete filtered ...
+    assert "sdsimpletable.deleted_at IS NULL" in compiled_sql
+    # ... while the VALUES construct is left entirely untouched.
+    assert "myvals" in compiled_sql

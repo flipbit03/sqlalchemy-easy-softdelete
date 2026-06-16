@@ -12,6 +12,7 @@ from sqlalchemy.orm.util import _ORMJoin
 from sqlalchemy.sql import Alias, CompoundSelect, Executable, Join, Select, Subquery, TableClause
 from sqlalchemy.sql.elements import TextClause
 from sqlalchemy.sql.lambdas import LambdaElement
+from sqlalchemy.sql.selectable import Values
 
 from sqlalchemy_easy_softdelete.hook import IgnoredTable
 
@@ -251,6 +252,12 @@ class SoftDeleteQueryRewriter:
         if isinstance(from_obj, TableClause) or isinstance(from_obj, TextClause):
             # TableClause/TextClause objects are raw text SQL identifiers and as such, we cannot
             # introspect or do anything about this statement.
+            return stmt
+
+        if isinstance(from_obj, Values):
+            # A VALUES (...) construct is a literal row set with no underlying table,
+            # so there is nothing to apply a soft-delete filter to. Leave it untouched
+            # (same as raw-text identifiers above).
             return stmt
 
         if isinstance(from_obj, Alias):
