@@ -10,4 +10,4 @@ class IgnoredTable:
 
     def match_name(self, table: Table):
         # Table matches if the name and schema match
-        return self.name == table.name and self.table_schema == table.schema
+        return self.name == table.name and self.table_schema == getattr(table, "schema", None)

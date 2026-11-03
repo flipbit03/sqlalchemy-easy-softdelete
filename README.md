@@ -94,7 +94,7 @@ SoftDeleteMixin._sqlalchemy_easy_softdelete_rewriter.rewrite_cache_info()
 # RewriteCacheInfo(hits=48210, misses=212, uncacheable=35, size=212, max_size=500)
 ```
 
-`uncacheable` counts the statements whose rewrite cannot be remembered, and is redone on every execution: statements that select from a subquery through an `aliased()` entity, and statements without a SQLAlchemy cache key.
+`uncacheable` counts the statements whose rewrite cannot be remembered, and is redone on every execution, such as statements that select from a subquery through an `aliased()` entity, and statements without a SQLAlchemy cache key.
 
 ### Contributing
 
