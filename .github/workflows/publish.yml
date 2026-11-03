@@ -52,4 +52,4 @@ jobs:
         run: ls -l
 
       - name: publish to PyPI
-        uses: pypa/gh-action-pypi-publish@v1.12.4
+        uses: pypa/gh-action-pypi-publish@v1.14.3
