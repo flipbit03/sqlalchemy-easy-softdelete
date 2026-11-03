@@ -4,7 +4,7 @@
 [![PyPI - Version](https://img.shields.io/pypi/v/sqlalchemy-easy-softdelete?v=2)](https://pypi.org/project/sqlalchemy-easy-softdelete/)
 [![PyPI - Types](https://img.shields.io/pypi/types/sqlalchemy-easy-softdelete?v=2)](https://pypi.org/project/sqlalchemy-easy-softdelete/)
 [![PyPI - Downloads](https://img.shields.io/pypi/dm/sqlalchemy-easy-softdelete?v=2)](https://pypi.org/project/sqlalchemy-easy-softdelete/)
-![Supported SQLAlchemy Versions](https://img.shields.io/badge/SQLAlchemy-1.4%20%2F%202.0-brightgreen?v=2)
+![Supported SQLAlchemy Versions](https://img.shields.io/badge/SQLAlchemy-2.0-brightgreen?v=2)
 
 Easily add soft-deletion to your SQLAlchemy Models and automatically filter out soft-deleted objects from your queries and relationships.
 
@@ -73,6 +73,28 @@ This will generate a query with an automatic `WHERE fruit.deleted_at IS NULL` co
 all_fruits = session.query(Fruit).execution_options(include_deleted=True).all()
 ```
 Setting `include_deleted=True` (attribute name can be customized) in the query disables soft delete for that query.
+
+The rewrite never modifies your statement or anything inside it, so statements, subqueries and `lambda_stmt()` objects can be built once and executed many times, with or without `include_deleted`.
+
+### Rewrite cache
+
+To know which tables a SELECT reads from, the library has SQLAlchemy work out the statement's final FROM clause, which for an ORM statement runs SQLAlchemy's ORM compilation of it, outside of SQLAlchemy's own compiled cache. The library remembers what it adds to a statement by the statement's cache key, so later statements of the same shape (the same SQL, with any parameter values) skip that work.
+
+The cache holds 500 statement shapes by default, the same as SQLAlchemy's default `query_cache_size`. An application with more distinct statements can raise it, and `0` disables it:
+
+```py
+class SoftDeleteMixin(generate_soft_delete_mixin_class(rewrite_cache_size=2000)):  # type: ignore[misc]
+    deleted_at: Mapped[datetime | None]
+```
+
+Each entry takes 1-4 KB, most of it the statement's cache key. To see how well the size fits, read the cache statistics of the mixin's rewriter. `misses` counts the statement shapes that were analyzed and then remembered: a `misses` count that keeps growing while `size` stays at `max_size` means the cache is too small.
+
+```py
+SoftDeleteMixin._sqlalchemy_easy_softdelete_rewriter.rewrite_cache_info()
+# RewriteCacheInfo(hits=48210, misses=212, uncacheable=35, size=212, max_size=500)
+```
+
+`uncacheable` counts the statements whose rewrite cannot be remembered, and is redone on every execution, such as statements without a SQLAlchemy cache key.
 
 ### Contributing
 
