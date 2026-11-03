@@ -504,26 +504,28 @@ class SoftDeleteQueryRewriter:
         entities: dict[type, None] = {}
         reusable = True
         for opt in stmt._with_options:
-            if not isinstance(opt, Load) or opt.path is None:
+            if not isinstance(opt, Load):
                 continue
 
-            # The option's path: entities (mappers, aliased() entities) and the relationships between them.
-            # PathRegistry is iterable at runtime but not typed as such
-            path_elements: list[Any] = list(opt.path)  # type: ignore[call-overload]
-            for position, path_element in enumerate(path_elements):
-                if isinstance(path_element, AliasedInsp):
-                    if position == 0:
-                        # An aliased() entity the option starts from is in the statement's FROM
-                        # clause, which the rewrite handles; the entities it loads are the ones to filter.
-                        continue
-                    subquery = _subquery_in(path_element.selectable)
-                    if subquery is not None:
-                        reusable = False
-                        if not self._filtered_mappers_in(subquery.element)[1]:
+            # An option holds a loader for each path it loads, including those its options() add:
+            # entities (mappers, aliased() entities) and the relationships between them.
+            for path in [loader.path for loader in opt.context] or [opt.path]:
+                # PathRegistry is iterable at runtime but not typed as such
+                path_elements: list[Any] = list(path) if path is not None else []  # type: ignore[call-overload]
+                for position, path_element in enumerate(path_elements):
+                    if isinstance(path_element, AliasedInsp):
+                        if position == 0:
+                            # An aliased() entity the option starts from is in the statement's FROM
+                            # clause, which the rewrite handles; the entities it loads are the ones to filter.
                             continue
-                entity_class = self._extract_entity_class_from_path_element(path_element)
-                if entity_class is not None and self._is_soft_deletable_entity(entity_class):
-                    entities.setdefault(entity_class, None)
+                        subquery = _subquery_in(path_element.selectable)
+                        if subquery is not None:
+                            reusable = False
+                            if not self._filtered_mappers_in(subquery.element)[1]:
+                                continue
+                    entity_class = self._extract_entity_class_from_path_element(path_element)
+                    if entity_class is not None and self._is_soft_deletable_entity(entity_class):
+                        entities.setdefault(entity_class, None)
 
         return list(entities), reusable
 
