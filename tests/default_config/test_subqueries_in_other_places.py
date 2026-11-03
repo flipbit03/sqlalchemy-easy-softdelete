@@ -22,7 +22,7 @@ def _expected_counts(session: Session) -> dict[int, int]:
         .group_by(SDChild.parent_id)
         .execution_options(include_deleted=True)
     )
-    return dict(session.execute(stmt).all())
+    return {parent_id: count for parent_id, count in session.execute(stmt).all()}
 
 
 def _active_child_ids_of_active_parents(session: Session) -> list[int]:
