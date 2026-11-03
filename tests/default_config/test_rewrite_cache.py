@@ -120,18 +120,19 @@ def test_a_statement_holding_a_subquery_reuses_its_plan():
     assert len(sql) == 1
 
 
-def test_a_subquery_reached_through_an_aliased_entity_is_analyzed_every_time():
-    """The plan refers to the aliased() entity of each statement, so it is not remembered; the
-    statement inside the subquery has a plan of its own, which is."""
+def test_a_statement_selecting_from_an_aliased_subquery_reuses_its_plan():
+    """Like a subquery the statement holds, the subquery of an aliased() entity is found again without
+    analyzing the statement."""
     rewriter = _rewriter()
+    first_sql = {_compiled(rewriter.rewrite_statement(_aliased_subquery()))[0] for _ in range(2)}
 
     with _count_final_froms() as final_froms:
-        for _ in range(3):
-            rewriter.rewrite_statement(_aliased_subquery())
+        sql = {_compiled(rewriter.rewrite_statement(_aliased_subquery()))[0] for _ in range(3)}
 
-    assert final_froms.call_count == 3 + 1
-    info = rewriter.rewrite_cache_info()
-    assert (info.uncacheable, info.misses, info.size) == (3, 1, 1)
+    assert final_froms.call_count == 0
+    assert sql == first_sql
+    assert len(sql) == 1
+    assert rewriter.rewrite_cache_info().uncacheable == 0
 
 
 def _active(entity: Any, disabled: bool = False) -> Any:

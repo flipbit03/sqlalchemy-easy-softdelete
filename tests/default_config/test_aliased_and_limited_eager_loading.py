@@ -1,7 +1,7 @@
 """Soft-delete filtering of aliased() entities, and of eager loading around a LIMIT.
 
-- A subquery reached through ``aliased(Model, subquery)`` is filtered without modifying it, also when
-  the entity is referred to where it cannot be replaced (loader options, unions of SQLAlchemy 1.4).
+- A subquery reached through ``aliased(Model, subquery)`` is filtered without modifying it, wherever
+  the entity is referred to (loader options, Bundles, unions, joins), and rows stay keyed by it.
 - Joining an ``aliased()`` entity explicitly, while eager loading the same entity, renders valid SQL.
 - With eager loading and a LIMIT, the ORM moves the statement into a subquery; the tables of the
   statement are still filtered.
@@ -367,7 +367,7 @@ def _union_with(column: Any) -> Any:
 
 
 # Each case: (the ids the union selects, the expected ids)
-UNIONS_OF_ALIASES_THAT_STAY: dict[str, tuple[Callable[[Session], list[int]], Callable[[Session], list[int]]]] = {
+UNIONS_OF_ALIASED_SUBQUERIES: dict[str, tuple[Callable[[Session], list[int]], Callable[[Session], list[int]]]] = {
     "with_polymorphic": (
         lambda s: sorted(
             row[0]
@@ -399,8 +399,10 @@ UNIONS_OF_ALIASES_THAT_STAY: dict[str, tuple[Callable[[Session], list[int]], Cal
 }
 
 
-@pytest.mark.parametrize("ids, expected", UNIONS_OF_ALIASES_THAT_STAY.values(), ids=UNIONS_OF_ALIASES_THAT_STAY.keys())
-def test_union_member_selecting_from_an_alias_that_cannot_be_rebuilt_is_filtered(seeded_session, ids, expected):
+@pytest.mark.parametrize(
+    "ids, expected", UNIONS_OF_ALIASED_SUBQUERIES.values(), ids=UNIONS_OF_ALIASED_SUBQUERIES.keys()
+)
+def test_union_member_selecting_from_an_aliased_subquery_is_filtered(seeded_session, ids, expected):
     assert ids(seeded_session) == expected(seeded_session)
 
 
@@ -454,7 +456,7 @@ def _add_parent_whose_children_are_all_deleted(session: Session) -> int:
     return parent_id
 
 
-OUTER_JOINS_TO_AN_ALIAS_THAT_STAYS: dict[str, Callable[[Any], Any]] = {
+OUTER_JOINS_TO_AN_ALIASED_SUBQUERY: dict[str, Callable[[Any], Any]] = {
     "outerjoin_with_load_only": lambda alias: (
         select(SDParent, alias)
         .outerjoin(alias, alias.parent_id == SDParent.id)
@@ -469,7 +471,7 @@ OUTER_JOINS_TO_AN_ALIAS_THAT_STAYS: dict[str, Callable[[Any], Any]] = {
 
 
 @pytest.mark.parametrize(
-    "make_stmt", OUTER_JOINS_TO_AN_ALIAS_THAT_STAYS.values(), ids=OUTER_JOINS_TO_AN_ALIAS_THAT_STAYS.keys()
+    "make_stmt", OUTER_JOINS_TO_AN_ALIASED_SUBQUERY.values(), ids=OUTER_JOINS_TO_AN_ALIASED_SUBQUERY.keys()
 )
 def test_outer_join_to_an_aliased_subquery_keeps_rows_without_an_active_match(seeded_session, make_stmt):
     """Filtering the subquery's rows must not drop the rows that the LEFT OUTER JOIN keeps."""
@@ -488,3 +490,122 @@ def test_outer_join_to_an_aliased_subquery_keeps_rows_without_an_active_match(se
     loaded_children = [obj for obj in seeded_session.identity_map.values() if isinstance(obj, SDChild)]
     assert loaded_children
     assert all(child.deleted_at is None for child in loaded_children)
+
+
+def _child_ids_of_parents(session: Session, *parent_ids: int) -> list[int]:
+    return [child_id for child_id in _active_child_ids(session) if child_id // 100 in parent_ids]
+
+
+def _core_join_of_children_and_parents() -> Any:
+    child, parent = SDChild.__table__, SDParent.__table__
+    return select(child).join(parent, parent.c.id == child.c.parent_id)
+
+
+def _orm_select_joined_to_a_core_table() -> Any:
+    parent = SDParent.__table__
+    return select(SDChild).join(parent, parent.c.id == SDChild.parent_id)
+
+
+def _union_with_a_core_member() -> Any:
+    child = SDChild.__table__
+    return union_all(select(SDChild).where(SDChild.parent_id == 1000), select(child).where(child.c.parent_id == 1001))
+
+
+# Each case: (builds the statement inside the subquery, the expected child ids)
+STATEMENTS_WITH_CORE_TABLES: dict[str, tuple[Callable[[], Any], Callable[[Session], list[int]]]] = {
+    "core_join": (_core_join_of_children_and_parents, _active_child_ids_of_active_parents),
+    "orm_select_joined_to_a_core_table": (_orm_select_joined_to_a_core_table, _active_child_ids_of_active_parents),
+    "union_with_a_core_member": (_union_with_a_core_member, lambda s: _child_ids_of_parents(s, 1000, 1001)),
+}
+
+# Each case: the statement selecting from the aliased() entity, which it refers to in other ways too
+REFERENCES_TO_AN_ALIASED_ENTITY: dict[str, Callable[[Any], Any]] = {
+    "load_only": lambda alias: select(alias).options(load_only(alias.parent_id)),
+    "bundle": lambda alias: select(Bundle("child", alias.id, alias.parent_id)),
+    "alias_of_it": lambda alias: select(aliased(alias)),
+}
+
+
+@pytest.mark.parametrize(
+    "make_stmt", REFERENCES_TO_AN_ALIASED_ENTITY.values(), ids=REFERENCES_TO_AN_ALIASED_ENTITY.keys()
+)
+@pytest.mark.parametrize(
+    "make_inner, expected", STATEMENTS_WITH_CORE_TABLES.values(), ids=STATEMENTS_WITH_CORE_TABLES.keys()
+)
+def test_core_tables_inside_an_aliased_subquery_are_filtered_wherever_it_is_referred_to(
+    seeded_session, make_inner, expected, make_stmt
+):
+    alias = aliased(SDChild, make_inner().subquery())
+
+    ids = sorted(row[0].id for row in seeded_session.execute(make_stmt(alias)))
+
+    assert ids == expected(seeded_session)
+
+
+def test_bundle_of_subquery_columns_is_filtered(seeded_session):
+    children = select(SDChild).subquery()
+
+    rows = seeded_session.execute(select(Bundle("child", children.c.id, children.c.parent_id))).all()
+
+    assert sorted(row[0].id for row in rows) == _active_child_ids(seeded_session)
+
+
+def test_bundle_of_joined_subquery_columns_is_filtered(seeded_session):
+    children = select(SDChild).subquery()
+    stmt = select(Bundle("child", children.c.id)).join(SDParent, SDParent.id == children.c.parent_id)
+
+    rows = seeded_session.execute(stmt).all()
+
+    assert sorted(row[0].id for row in rows) == _active_child_ids_of_active_parents(seeded_session)
+
+
+def _aliased_children_with_a_limit() -> Any:
+    return aliased(SDChild, select(SDChild).order_by(SDChild.id).limit(1000).subquery())
+
+
+def test_loader_option_on_an_aliased_subquery_with_a_limit_does_not_filter_a_subquery_that_includes_deleted(
+    seeded_session,
+):
+    counts = (
+        select(SDChild.parent_id, func.count().label("n"))
+        .group_by(SDChild.parent_id)
+        .execution_options(include_deleted=True)
+        .subquery()
+    )
+    alias = _aliased_children_with_a_limit()
+    stmt = (
+        select(alias, counts.c.n)
+        .join(counts, counts.c.parent_id == alias.parent_id)
+        .options(selectinload(alias.child_children))
+    )
+
+    rows = seeded_session.execute(stmt).all()
+
+    totals = _child_totals_including_deleted(seeded_session)
+    assert sorted(child.id for child, _ in rows) == _active_child_ids(seeded_session)
+    assert all(count == totals[child.parent_id] for child, count in rows)
+
+
+def test_union_member_that_includes_deleted_after_an_aliased_subquery_with_a_limit(seeded_session):
+    alias = _aliased_children_with_a_limit()
+    union = union_all(select(aliased(alias).id), select(SDChild.id).execution_options(include_deleted=True))
+
+    ids = sorted(row[0] for row in seeded_session.execute(union))
+
+    all_child_ids = list(seeded_session.scalars(select(SDChild.id).execution_options(include_deleted=True)))
+    assert ids == sorted(_active_child_ids(seeded_session) + all_child_ids)
+
+
+@pytest.mark.parametrize("loader", [joinedload, selectinload, subqueryload], ids=lambda loader: loader.__name__)
+def test_eager_load_into_an_aliased_subquery_that_includes_deleted_loads_them(seeded_session, loader):
+    everything = aliased(SDChild, select(SDChild).execution_options(include_deleted=True).subquery())
+
+    parents = seeded_session.scalars(select(SDParent).options(loader(SDParent.children.of_type(everything)))).unique()
+
+    expected = seeded_session.scalars(
+        select(SDChild.id)
+        .join(SDChild.parent)
+        .where(SDParent.deleted_at.is_(None))
+        .execution_options(include_deleted=True)
+    )
+    assert sorted(child.id for parent in parents for child in parent.children) == sorted(expected)

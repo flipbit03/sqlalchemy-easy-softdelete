@@ -49,3 +49,10 @@ class MSItemView(MSModelBase):
 
     __table__ = select(item.c.id, item.c.name, item.c.erased_at).subquery("msitem_view")
     __mapper_args__ = {"primary_key": [__table__.c.id]}
+
+
+class MSItemName(MSModelBase):
+    """Mapped to a SELECT of the soft-deletable table that leaves out its soft-delete column."""
+
+    __table__ = select(item.c.id, item.c.name).subquery("msitem_name")
+    __mapper_args__ = {"primary_key": [__table__.c.id]}

@@ -4,7 +4,7 @@
 [![PyPI - Version](https://img.shields.io/pypi/v/sqlalchemy-easy-softdelete?v=2)](https://pypi.org/project/sqlalchemy-easy-softdelete/)
 [![PyPI - Types](https://img.shields.io/pypi/types/sqlalchemy-easy-softdelete?v=2)](https://pypi.org/project/sqlalchemy-easy-softdelete/)
 [![PyPI - Downloads](https://img.shields.io/pypi/dm/sqlalchemy-easy-softdelete?v=2)](https://pypi.org/project/sqlalchemy-easy-softdelete/)
-![Supported SQLAlchemy Versions](https://img.shields.io/badge/SQLAlchemy-1.4%20%2F%202.0-brightgreen?v=2)
+![Supported SQLAlchemy Versions](https://img.shields.io/badge/SQLAlchemy-2.0-brightgreen?v=2)
 
 Easily add soft-deletion to your SQLAlchemy Models and automatically filter out soft-deleted objects from your queries and relationships.
 
@@ -94,7 +94,7 @@ SoftDeleteMixin._sqlalchemy_easy_softdelete_rewriter.rewrite_cache_info()
 # RewriteCacheInfo(hits=48210, misses=212, uncacheable=35, size=212, max_size=500)
 ```
 
-`uncacheable` counts the statements whose rewrite cannot be remembered, and is redone on every execution, such as statements that select from a subquery through an `aliased()` entity, and statements without a SQLAlchemy cache key.
+`uncacheable` counts the statements whose rewrite cannot be remembered, and is redone on every execution, such as statements without a SQLAlchemy cache key.
 
 ### Contributing
 

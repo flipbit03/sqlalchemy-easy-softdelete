@@ -3,7 +3,7 @@ the mapping itself is never modified."""
 
 from sqlalchemy import func, select
 
-from tests.custom_mapped_selectables.model import MSEmployee, MSItemView, MSManager
+from tests.custom_mapped_selectables.model import MSEmployee, MSItemName, MSItemView, MSManager
 
 
 def _names(session, stmt):
@@ -41,3 +41,10 @@ def test_include_deleted_after_filtered_queries_includes_everything(db_session):
 
     assert everyone == ["employee", "erased employee", "erased manager", "manager"]
     assert items == ["erased item", "item"]
+
+
+def test_class_mapped_to_a_select_without_the_soft_delete_column_is_filtered(db_session):
+    """The SELECT the class is mapped to is filtered inside, without modifying the mapping."""
+    assert _names(db_session, select(MSItemName)) == ["item"]
+    assert _names(db_session, select(MSItemName).execution_options(include_deleted=True)) == ["erased item", "item"]
+    assert _names(db_session, select(MSItemName)) == ["item"]

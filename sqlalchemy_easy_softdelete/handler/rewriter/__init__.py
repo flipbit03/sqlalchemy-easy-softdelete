@@ -11,16 +11,22 @@ from dataclasses import dataclass
 from typing import Any, NamedTuple, cast
 
 from sqlalchemy import Column, Table, inspect
-from sqlalchemy.orm import Bundle, FromStatement, Mapper, RelationshipProperty, with_loader_criteria
+from sqlalchemy.orm import FromStatement, Mapper, RelationshipProperty, with_loader_criteria
 from sqlalchemy.orm.attributes import QueryableAttribute
 from sqlalchemy.orm.strategy_options import Load
 from sqlalchemy.orm.util import AliasedClass, AliasedInsp
 from sqlalchemy.sql import Alias, CompoundSelect, Executable, Join, Select, Subquery, TableClause, visitors
 from sqlalchemy.sql.annotation import Annotated
-from sqlalchemy.sql.elements import ColumnClause, Label, TextClause
+from sqlalchemy.sql.elements import ColumnClause, TextClause
 from sqlalchemy.sql.lambdas import LambdaElement
-from sqlalchemy.sql.selectable import FromClause, FromGrouping, SelectBase, SelectStatementGrouping, Values
-from sqlalchemy.util import immutabledict
+from sqlalchemy.sql.selectable import (
+    AliasedReturnsRows,
+    FromClause,
+    FromGrouping,
+    SelectBase,
+    SelectStatementGrouping,
+    Values,
+)
 
 from sqlalchemy_easy_softdelete.hook import IgnoredTable
 
@@ -42,7 +48,7 @@ class RewriteCacheInfo(NamedTuple):
 
     uncacheable: int
     """SELECTs whose FROM clause was analyzed, and whose rewrite cannot be remembered: statements
-    without a cache key, and statements that select from a subquery through an ``aliased()`` entity."""
+    without a cache key, and statements whose rewrite depends on what their cache key leaves out."""
 
     size: int
     """Statement shapes currently remembered."""
@@ -61,45 +67,22 @@ class _SelectPlan:
     """What the soft-delete rewrite of one SELECT adds to it."""
 
     filter_columns: tuple[Column[Any], ...]
-    """Soft-delete columns of the tables in the FROM clause, filtered with ``IS NULL``, and of the
-    subqueries in it that stay as they are (a class's mapped subquery, an ``aliased()`` subquery that
-    cannot be replaced)."""
+    """Soft-delete columns of the tables in the FROM clause, filtered with ``IS NULL``."""
 
     criteria_entities: tuple[tuple[type, bool], ...]
     """Mapped classes filtered through ``with_loader_criteria`` options on this statement (eager loading),
     each with whether the filter also applies to the class's ``aliased()`` forms."""
 
-    compile_time_entities: tuple[type, ...]
-    """Mapped classes filtered while SQLAlchemy compiles this statement, for subqueries that must stay as
-    they are: the statement registers loader criteria when it is compiled, which reach the SELECTs
-    nested in it. Loader criteria options would only apply on the statement that is executed."""
-
     rewrites_subqueries: bool
-    """Whether subqueries the statement holds in its FROM clause are replaced by rewritten copies."""
+    """Whether the FROM clause holds subqueries, which filtered copies replace in it."""
 
     reusable: bool
     """Whether the plan holds for every statement with the same cache key.
 
-    It does not when a subquery is reached through an ``aliased()`` entity, or not referred to at all:
-    the plan then depends on objects of that statement, or on execution options of the statement
-    inside the subquery, which cache keys leave out. Nor when the subqueries a statement holds cannot
-    be found again without analyzing its FROM clause.
+    It does not when it depends on execution options of a statement inside a subquery, which cache
+    keys leave out, nor when the subqueries a statement holds cannot be found again without analyzing
+    its FROM clause.
     """
-
-
-class _FromAnalysis(NamedTuple):
-    """The subqueries of one statement that its plan replaces, from the analysis of its FROM clause."""
-
-    held: list[Subquery]
-    """Subqueries the statement holds itself."""
-
-    aliased: list[tuple[Subquery, list[AliasedInsp[Any]]]]
-    """Subqueries reached through ``aliased()`` entities, with those entities."""
-
-    filtered_aliases: list[tuple[int, AliasedInsp[Any]]] = []
-    """``aliased()`` entities over subqueries that stay as they are, on the outer side of a LEFT OUTER or
-    FULL JOIN, whose rows are filtered in the join while SQLAlchemy compiles the statement, each with
-    its position among the subqueries of the statement's FROM clause."""
 
 
 class _PlanCache:
@@ -137,95 +120,14 @@ class _PlanCache:
         return len(self._plans)
 
 
-class _StatementReferences:
-    """How a statement refers to the subqueries in its FROM clause.
-
-    A subquery the statement holds directly (``join(sq)``, ``select(sq.c.x)``, ``select_from(sq)``) is
-    replaced by a rewritten copy. So is a subquery the ORM reaches through an ``aliased()`` entity,
-    which keeps pointing at the original object: a new ``aliased()`` entity over the copy takes the
-    place of the old one wherever the statement refers to it. When the entity is also referred to
-    where it cannot be replaced (loader options, relationship joins of a SELECT nested in the
-    statement, joins and options that ``with_only_columns()`` set aside, a ``Bundle``, an alias of
-    the entity, ``with_polymorphic()``), the subquery is "fixed": it stays as it is, and is filtered
-    from outside instead (see ``SoftDeleteQueryRewriter._filter_fixed_subquery``). So is a subquery
-    that is the selectable of a mapped class (a class mapped to a SELECT, a concrete inheritance
-    union), and one the statement does not refer to at all.
-    """
-
-    def __init__(self, stmt: Select[Any]) -> None:
-        self.held: set[int] = set()
-        self.aliases: dict[int, list[AliasedInsp[Any]]] = {}
-        self.fixed: set[int] = set()
-        self.mappers: dict[int, list[Mapper[Any]]] = {}
-
-        for element in visitors.iterate(stmt):
-            if isinstance(element, Annotated):
-                self._note(element._annotations.get("parententity"))
-                bundle = element._annotations.get("bundle")
-                if isinstance(bundle, Bundle):
-                    # The ORM renders a Bundle from its own expressions, which no replacement reaches.
-                    self._note_bundle(bundle)
-            else:
-                self.held.add(id(element))
-            if not isinstance(element, Select):
-                continue
-            # Relationship joins (`join(Parent.children.of_type(alias))`) hold attributes, which the
-            # traversal does not reach. Only those of the statement itself are rebuilt.
-            self._note_joins_and_options(element, fixed_joins=element is not stmt)
-            # with_only_columns() sets the statement's earlier joins and options aside.
-            for memoized in getattr(element, "_memoized_select_entities", ()):
-                self._note_joins_and_options(memoized, fixed_joins=True)
-
-    def _note_joins_and_options(self, element: Any, fixed_joins: bool) -> None:
-        for part in _relationship_join_parts(element):
-            self._note(part.parent, fixed=fixed_joins)
-            self._note(part._of_type, fixed=fixed_joins)
-        for option in element._with_options:
-            if isinstance(option, Load):
-                for path_element in _loader_path_elements(option):
-                    self._note(getattr(path_element, "parent", path_element), fixed=True)
-                    self._note(getattr(path_element, "_of_type", None), fixed=True)
-
-    def _note_bundle(self, bundle: Bundle[Any]) -> None:
-        for expr in bundle.exprs:
-            if isinstance(expr, Bundle):
-                self._note_bundle(expr)
-            else:
-                self._note(getattr(expr, "_annotations", {}).get("parententity"), fixed=True)
-
-    def _note(self, entity: Any, fixed: bool = False) -> None:
-        insp = inspect(entity, raiseerr=False) if entity is not None else None
-        if isinstance(insp, Mapper):
-            for selectable in _mapper_selectables(insp):
-                subquery = _subquery_in(selectable)
-                if subquery is not None:
-                    mappers = self.mappers.setdefault(id(subquery), [])
-                    if insp not in mappers:
-                        mappers.append(insp)
-            return
-        if not isinstance(insp, AliasedInsp):
-            return
-        self._register(id(insp.selectable), insp, fixed or not _can_rebuild(insp))
-        inner = _subquery_in(insp.selectable)
-        if inner is not None and inner is not insp.selectable:
-            # An alias of an aliased() entity selects from an Alias of the subquery, inside which a
-            # rewritten copy cannot be placed.
-            self._register(id(inner), insp, fixed=True)
-
-    def _register(self, key: int, insp: AliasedInsp[Any], fixed: bool) -> None:
-        insps = self.aliases.setdefault(key, [])
-        if not any(known is insp for known in insps):
-            insps.append(insp)
-        if fixed:
-            self.fixed.add(key)
-
-
 class SoftDeleteQueryRewriter:
     """Rewrites SQL statements based on configuration.
 
     Rewriting never modifies the statement it is given, nor any object inside it: it returns a new
     statement. Applications can therefore reuse statements, subqueries and ``lambda_stmt`` objects
-    across executions, with and without soft-delete filtering.
+    across executions, with and without soft-delete filtering. The new statement differs only in its
+    FROM clause, where filtered copies of subqueries replace them, and keeps the caller's columns,
+    entities and options, which SQLAlchemy keys result rows by (``row._mapping[subquery.c.x]``).
 
     Finding the tables of an ORM SELECT means running SQLAlchemy's ORM compilation of it, outside of
     SQLAlchemy's compiled cache. The rewriter remembers what it adds to a statement by the statement's
@@ -355,8 +257,8 @@ class SoftDeleteQueryRewriter:
         if self._is_disabled(stmt):
             return stmt
 
-        plan, analysis = self._plan_for(stmt)
-        return self._apply_plan(stmt, plan, analysis)
+        plan, subqueries = self._plan_for(stmt)
+        return self._apply_plan(stmt, plan, subqueries)
 
     def rewrite_compound_select(self, stmt: CompoundSelect) -> CompoundSelect:
         """Rewrite a Compound Select Statement."""
@@ -394,35 +296,9 @@ class SoftDeleteQueryRewriter:
             )
         )
 
-    def _with_compile_time_criteria(
-        self, stmt: Select[Any], entities: tuple[type, ...], aliases: list[tuple[int, AliasedInsp[Any]]]
-    ) -> Select[Any]:
-        """``stmt``, registering loader criteria for ``entities`` and for the ``aliased()`` entities of
-        ``aliases`` when SQLAlchemy compiles it.
-
-        SQLAlchemy applies the loader criteria options of the statement it executes only (on 1.4, only
-        those of an ORM statement), to it and to the SELECTs nested in it. A statement's context
-        options, on the other hand, run whenever SQLAlchemy compiles it, at any depth, before the
-        SELECTs nested in it. The criteria they register reach those SELECTs, and the SELECTs compiled
-        after it. Criteria of an ``aliased()`` entity apply to that entity only, in the ON clause of a
-        join to it (so a LEFT OUTER JOIN keeps its rows without a match), otherwise in the WHERE clause.
-        """
-        options = [with_loader_criteria(entity, self._is_not_deleted) for entity in entities]
-        options.extend(with_loader_criteria(insp.entity, self._is_not_deleted) for _, insp in aliases)
-
-        def register_criteria(compile_state: Any) -> None:
-            for option in options:
-                option.process_compile_state(compile_state)
-
-        # SQLAlchemy keys the compiled statement on the function's code and on these arguments: the
-        # entities filtered, and where the filtered aliases are (which statements of the same shape do
-        # not filter when the statement inside includes soft-deleted rows).
-        positions = tuple(position for position, _ in aliases)
-        return stmt._add_context_option(register_criteria, (self.deleted_field_name, entities, positions))
-
-    def _plan_for(self, stmt: Select[Any]) -> tuple[_SelectPlan, _FromAnalysis | None]:
+    def _plan_for(self, stmt: Select[Any]) -> tuple[_SelectPlan, list[FromClause] | None]:
         """The plan for ``stmt``, a remembered one for its shape or a new one, and, for a new one, the
-        subqueries of its FROM clause that the plan replaces.
+        subqueries of its FROM clause.
         """
         cache = self._plan_cache
         cache_key = stmt._generate_cache_key() if cache is not None else None
@@ -431,204 +307,111 @@ class SoftDeleteQueryRewriter:
             if plan is not None:
                 return plan, None
 
-        plan, analysis = self._plan_select(stmt)
+        plan, subqueries = self._plan_select(stmt)
         if cache is not None:
             if cache_key is not None and plan.reusable:
                 cache.put(cache_key.key, plan)
             else:
                 cache.count_uncacheable()
-        return plan, analysis
+        return plan, subqueries
 
-    def _plan_select(self, stmt: Select[Any]) -> tuple[_SelectPlan, _FromAnalysis]:
+    def _plan_select(self, stmt: Select[Any]) -> tuple[_SelectPlan, list[FromClause]]:
         """Work out what the soft-delete rewrite adds to ``stmt``, and the subqueries of its FROM clause
-        that it replaces.
+        (or aliases of subqueries), which filtered copies replace.
         """
         columns: list[Column[Any]] = []
-        subqueries: list[Subquery] = []
-        outer_joined: set[int] = set()
+        from_subqueries: list[FromClause] = []
         for from_obj in _final_froms_without_loader_options(stmt):
-            self._collect_from(from_obj, columns, subqueries, outer_joined)
+            self._collect_from(from_obj, columns, from_subqueries)
 
         # Eager loading joins aliases of the loaded classes: their filter applies to aliased() forms.
-        entities: _Criteria = dict.fromkeys(self._eager_loaded_entities(stmt), True)
-        compile_time_entities: dict[type, None] = {}
-        filtered_aliases: list[tuple[int, AliasedInsp[Any]]] = []
-        held: list[Subquery] = []
-        aliased: dict[int, tuple[Subquery, list[AliasedInsp[Any]]]] = {}
-        reusable = True
-        references = _StatementReferences(stmt) if subqueries else None
-        for position, subquery in enumerate(dict.fromkeys(subqueries)):
-            assert references is not None
-            selectable: Subquery = subquery
-            insps = references.aliases.get(id(subquery))
-            if insps is None and isinstance(subquery, Annotated):
-                # An explicit join to an aliased() entity, or select_from() of an entity, puts the
-                # entity's annotated subquery in the FROM clause, rather than the subquery itself.
-                insp = subquery._annotations.get("parententity")
-                if isinstance(insp, AliasedInsp):
-                    selectable = cast(Subquery, insp.selectable)
-                    insps = references.aliases.get(id(selectable), [insp])
-                elif isinstance(insp, Mapper):
-                    selectable = cast(Subquery, subquery._deannotate())
+        eager_entities, reusable = self._eager_loaded_entities(stmt)
+        entities: _Criteria = dict.fromkeys(eager_entities, True)
+        subqueries: dict[int, FromClause] = {}
+        for from_obj in from_subqueries:
+            plain = _plain(from_obj)
+            subqueries.setdefault(id(plain), plain)
+            insp = _annotated_entity(from_obj)
+            if isinstance(insp, AliasedInsp) and insp.mapper.class_ in entities:
+                # The eager loading criteria of the class reach this aliased() entity's rows too, which
+                # they must not filter when the statement inside the subquery includes soft-deleted
+                # rows: an execution option, which cache keys leave out.
+                reusable = False
+                if not self._filtered_mappers_in(_inner_statement(plain))[1]:
+                    entities[insp.mapper.class_] = False
 
-            if insps is None and id(subquery) in references.held:
-                held.append(subquery)
-                continue
-
-            if insps is None and id(selectable) in references.mappers:
-                # The selectable of a mapped class (a class mapped to a SELECT, a concrete inheritance
-                # union): part of the mapping, the same object in every statement, which cannot be
-                # replaced. It is filtered like a table, on its own soft-delete column (a union selects
-                # each table's), unless the statement inside it includes soft-deleted rows.
-                if self._filtered_mappers_in(selectable.element)[1]:
-                    self._collect_table(selectable, columns)
-                continue
-
-            reusable = False
-            if insps is not None and entities.keys() & {insp.mapper.class_ for insp in insps}:
-                if not self._filtered_mappers_in(selectable.element)[1]:
-                    # The statement inside includes soft-deleted rows: the eager loading criteria of
-                    # its class must not filter the entity's rows either.
-                    for insp in insps:
-                        if insp.mapper.class_ in entities:
-                            entities[insp.mapper.class_] = False
-
-            if insps is not None and id(selectable) not in references.fixed and all(map(_can_rebuild, insps)):
-                aliased.setdefault(id(selectable), (selectable, insps))
-                continue
-
-            # The subquery must stay as it is.
-            is_outer_joined = id(subquery) in outer_joined
-            for insp, column in self._filter_fixed_subquery(
-                selectable, insps or [], is_outer_joined, compile_time_entities
-            ):
-                if is_outer_joined:
-                    # Filtering the WHERE clause would drop the rows that a LEFT OUTER JOIN keeps
-                    # without a match: the entity's own criteria filter the join instead.
-                    filtered_aliases.append((position, insp))
-                else:
-                    columns.append(column)
-
-        if held and {id(subquery) for subquery in _held_from_subqueries(stmt)} != {id(s) for s in held}:
+        if subqueries and _FromScan(stmt).subqueries.keys() != subqueries.keys():
             # A later statement of this shape would not find its subqueries without this analysis.
             reusable = False
 
         plan = _SelectPlan(
             tuple(columns),
             tuple(entities.items()),
-            tuple(compile_time_entities),
-            rewrites_subqueries=bool(held),
+            rewrites_subqueries=bool(subqueries),
             reusable=reusable,
         )
-        return plan, _FromAnalysis(held, list(aliased.values()), filtered_aliases)
+        return plan, list(subqueries.values())
 
-    def _filter_fixed_subquery(
-        self,
-        subquery: Subquery,
-        insps: list[AliasedInsp[Any]],
-        is_outer_joined: bool,
-        compile_time_entities: dict[type, None],
-    ) -> list[tuple[AliasedInsp[Any], Any]]:
-        """Filter a subquery that must stay as it is, at compile time (see ``_with_compile_time_criteria``),
-        or return the ``aliased()`` entities over it whose rows to filter, each with the soft-delete
-        column its subquery passes on.
-
-        ``insps`` are the ``aliased()`` entities over the subquery. When the statement inside selects
-        rows of one table and nothing else, filtering the entities' rows on that column keeps the rows
-        that filtering inside would. Otherwise the entities that the statement inside refers to are
-        filtered, wherever SQLAlchemy selects from them. So are they on the outer side of an outer join,
-        where filtering the entities' rows takes the join's ON clause, so loader criteria, which
-        SQLAlchemy 2.0.10 does not apply to a join with an ON clause.
-        """
-        element = subquery.element
-        if isinstance(element, (Select, CompoundSelect)) and self._is_disabled(element):
-            return []
-        if insps and not is_outer_joined and _selects_rows_of_one_table(element):
-            filterable = self._filterable_aliases(insps)
-            if filterable is not None:
-                return filterable
-
-        mappers, fully_filtered = self._filtered_mappers_in(element)
-        for mapper in mappers:
-            if self._is_soft_deletable_entity(mapper.class_):
-                compile_time_entities.setdefault(mapper.class_, None)
-        if not fully_filtered:
-            return []
-        # A Core statement inside refers to no entity: filter the rows of the entities over it.
-        inner_classes = {mapper.class_ for mapper in mappers}
-        return self._filterable_aliases([insp for insp in insps if insp.mapper.class_ not in inner_classes]) or []
-
-    def _filterable_aliases(self, insps: list[AliasedInsp[Any]]) -> list[tuple[AliasedInsp[Any], Any]] | None:
-        """The soft-deletable entities of ``insps``, each with the soft-delete column its subquery passes on,
-        or None when the subquery of one of them does not pass it on."""
-        found = []
-        for insp in insps:
-            if not self._is_soft_deletable_entity(insp.mapper.class_):
-                continue
-            column = insp.mapper.columns.get(self.deleted_field_name)
-            passed_on = insp.selectable.corresponding_column(column) if column is not None else None
-            if passed_on is None:
-                return None
-            found.append((insp, passed_on))
-        return found
-
-    def _apply_plan(self, stmt: Select[Any], plan: _SelectPlan, analysis: _FromAnalysis | None) -> Select[Any]:
+    def _apply_plan(self, stmt: Select[Any], plan: _SelectPlan, subqueries: list[FromClause] | None) -> Select[Any]:
         """Return a copy of ``stmt`` with ``plan`` applied.
 
-        ``analysis`` holds the subqueries to replace when the FROM clause was just analyzed; otherwise
-        the subqueries the statement holds are found again (a plan with aliased subqueries is never
-        remembered).
+        ``subqueries`` are those of the FROM clause when it was just analyzed; otherwise they are found
+        again by reading the statement.
         """
-        if analysis is None:
-            analysis = _FromAnalysis(_held_from_subqueries(stmt) if plan.rewrites_subqueries else [], [])
-
-        copies: dict[int, Subquery] = {}
-        aliases: dict[int, tuple[AliasedInsp[Any], AliasedInsp[Any]]] = {}
-        for subquery in analysis.held:
-            element = self._rewrite_subquery_element(subquery.element)
-            if element is not subquery.element:
-                copies[id(subquery)] = _copy_subquery(subquery, element)
-        for subquery, insps in analysis.aliased:
-            element = self._rewrite_subquery_element(subquery.element)
-            if element is subquery.element:
-                continue
-            copy = _copy_subquery(subquery, element)
-            copies[id(subquery)] = copy
-            for insp in insps:
-                aliases[id(insp)] = (insp, _alias_over(insp, copy))
-        if copies:
-            stmt = _replace_in_statement(stmt, copies, aliases)
+        if plan.rewrites_subqueries:
+            if subqueries is None:
+                subqueries = list(_FromScan(stmt).subqueries.values())
+            memo: dict[int, FromClause | None] = {}
+            copies: dict[int, FromClause] = {}
+            for from_obj in subqueries:
+                copy = self._filtered_copy(from_obj, memo)
+                if copy is not None:
+                    copies[id(from_obj)] = copy
+            if copies:
+                stmt = _place_copies(stmt, copies)
 
         stmt = self._with_criteria(stmt, dict(plan.criteria_entities))
-        filtered_aliases = analysis.filtered_aliases
-        if plan.compile_time_entities or filtered_aliases:
-            stmt = self._with_compile_time_criteria(stmt, plan.compile_time_entities, filtered_aliases)
 
         for column in plan.filter_columns:
             stmt = stmt.filter(column.is_(None))
         return stmt
 
-    def _collect_from(
-        self, from_obj: Any, columns: list[Column[Any]], subqueries: list[Subquery], outer_joined: set[int]
-    ) -> None:
-        """Collect the soft-delete columns and subqueries of one element of a statement's FROM list, and
-        into ``outer_joined`` the ids of the subqueries on the outer side of a LEFT OUTER or FULL JOIN."""
+    def _filtered_copy(self, from_obj: FromClause, memo: dict[int, FromClause | None]) -> FromClause | None:
+        """A copy of a subquery (or of an alias of one) around its rewritten statement, or None when the
+        rewrite leaves the statement as it is. ``memo`` keeps the copies made for one statement."""
+        key = id(from_obj)
+        if key not in memo:
+            element: Any = cast(AliasedReturnsRows, from_obj).element
+            inner: Any
+            if isinstance(from_obj, Subquery):
+                inner = self._rewrite_subquery_element(element)
+                unchanged = inner is element
+            else:
+                # An alias of a subquery (an alias of an aliased() entity, or of a subquery's alias)
+                inner = self._filtered_copy(element, memo)
+                unchanged = inner is None
+            memo[key] = None if unchanged else _copy_selectable(from_obj, inner)
+        return memo[key]
+
+    def _collect_from(self, from_obj: Any, columns: list[Column[Any]], subqueries: list[FromClause]) -> None:
+        """Collect the soft-delete columns and subqueries of one element of a statement's FROM list."""
         if isinstance(from_obj, Table):
             self._collect_table(from_obj, columns)
             return
 
         if isinstance(from_obj, Join):
             # Join (and the ORM's _ORMJoin) holds two things: 'left' and 'right'. Check both.
-            self._collect_join(from_obj, columns, subqueries, outer_joined)
-            return
-
-        if isinstance(from_obj, Subquery):
-            subqueries.append(from_obj)
+            self._collect_join(from_obj, columns, subqueries)
             return
 
         if isinstance(from_obj, FromGrouping):
             # A parenthesized FROM element, such as a JOIN nested on the right of another JOIN.
-            self._collect_from(from_obj.element, columns, subqueries, outer_joined)
+            self._collect_from(from_obj.element, columns, subqueries)
+            return
+
+        if _subquery_in(from_obj) is not None:
+            # A subquery, or an alias of one (an alias of an aliased() entity).
+            subqueries.append(from_obj)
             return
 
         if isinstance(from_obj, TableClause) or isinstance(from_obj, TextClause):
@@ -643,57 +426,36 @@ class SoftDeleteQueryRewriter:
             return
 
         if isinstance(from_obj, Alias):
-            if isinstance(from_obj.element, Subquery):
-                subqueries.append(from_obj.element)
-                return
-
             raise NotImplementedError(
                 f'Unsupported object "{(type(from_obj.element))}" inside Alias in statement.froms'
             )
 
         raise NotImplementedError(f'Unsupported object "{(type(from_obj))}" in statement.froms')
 
-    def _collect_join(
-        self,
-        join: Join,
-        columns: list[Column[Any]],
-        subqueries: list[Subquery],
-        outer_joined: set[int],
-        outer_side: bool = False,
-    ) -> None:
-        """Handle multiple, and potentially recursive joins: nested joins, then subqueries, then tables.
-
-        ``outer_side`` tells whether the join is on the outer side of a LEFT OUTER or FULL JOIN.
-        """
-        sides = (
-            (_ungrouped(join.left), outer_side or join.full),
-            (_ungrouped(join.right), outer_side or join.isouter or join.full),
-        )
-        for side, side_is_outer in sides:
+    def _collect_join(self, join: Join, columns: list[Column[Any]], subqueries: list[FromClause]) -> None:
+        """Handle multiple, and potentially recursive joins: nested joins, then subqueries, then tables."""
+        sides = (_ungrouped(join.left), _ungrouped(join.right))
+        for side in sides:
             if isinstance(side, Join):
-                self._collect_join(side, columns, subqueries, outer_joined, side_is_outer)
-        for side, side_is_outer in sides:
+                self._collect_join(side, columns, subqueries)
+        for side in sides:
             # A subquery, or an alias of one (an alias of an aliased() entity).
-            subquery = side.element if isinstance(side, Alias) else side
-            if isinstance(subquery, Subquery):
-                subqueries.append(subquery)
-                if side_is_outer:
-                    outer_joined.add(id(subquery))
-        for side, _ in sides:
+            if not isinstance(side, Join) and _subquery_in(side) is not None:
+                subqueries.append(side)
+        for side in sides:
             if isinstance(side, Table):
                 self._collect_table(side, columns)
 
-    def _collect_table(self, table: Table | Subquery, columns: list[Column[Any]]) -> None:
-        """Collect the soft-delete column of ``table`` (or of a class's mapped subquery), unless it is
-        ignored or has none."""
-        if any(ignored.match_name(cast(Table, table)) for ignored in self.ignored_tables):
+    def _collect_table(self, table: Table, columns: list[Column[Any]]) -> None:
+        """Collect the soft-delete column of ``table``, unless it is ignored or has none."""
+        if any(ignored.match_name(table) for ignored in self.ignored_tables):
             return
 
         # Caveat: The automatic "bool(column_obj)" conversion actually returns a truthy value of False (?),
         # so we have to explicitly compare against None
         column_obj = table.columns.get(self.deleted_field_name)
         if column_obj is not None:
-            columns.append(cast("Column[Any]", column_obj))
+            columns.append(column_obj)
 
     def _rewrite_subquery_element(self, element: Any) -> Any:
         """Rewrite the statement inside a subquery."""
@@ -723,44 +485,47 @@ class SoftDeleteQueryRewriter:
             stack.extend(child.get_children())
         return list(found), fully_filtered
 
-    def _eager_loaded_entities(self, stmt: Select[Any]) -> list[type]:
-        """Soft-deletable entities named in the loader options' paths (joinedload, subqueryload, etc.).
+    def _eager_loaded_entities(self, stmt: Select[Any]) -> tuple[list[type], bool]:
+        """Soft-deletable entities named in the loader options' paths (joinedload, subqueryload, etc.),
+        and whether the list holds for every statement of the same shape.
 
         These are filtered with ``with_loader_criteria``, so the soft-delete filter also reaches the
         JOINed aliases and the separate queries that eager loading creates. Column loader options
         (``load_only``, ``defer``) name their entity too; their criteria repeat a filter the statement
         already has, which changes nothing.
 
-        Handles both SQLAlchemy 1.4 and 2.0 structures:
-        - 1.4: opt.path is a tuple of InstrumentedAttribute, entity via property.mapper.class_
-        - 2.0: opt.path is SlotsEntityRegistry with Mapper objects, entity via class_
+        An ``aliased()`` entity over a subquery whose statement includes soft-deleted rows is left out:
+        eager loading into it loads its rows as they are. That depends on the execution options of the
+        statement inside the subquery, which cache keys leave out.
         """
         # Access _with_options - an internal attribute for ORM loader options.
         # This is part of SQLAlchemy's _traverse_internals (dp_executable_options),
         # meaning it's stable across versions. There is no public API to read options.
         entities: dict[type, None] = {}
+        reusable = True
         for opt in stmt._with_options:
-            # Only process Load options (covers Load, _UnboundLoad in 1.4)
-            if not isinstance(opt, Load):
+            if not isinstance(opt, Load) or opt.path is None:
                 continue
 
-            # Load.path is a public attribute containing the entity/relationship path
-            path = opt.path
-            if path is None:
-                continue
-
+            # The option's path: entities (mappers, aliased() entities) and the relationships between them.
             # PathRegistry is iterable at runtime but not typed as such
-            path_elements: list[Any] = list(path)  # type: ignore[call-overload]
+            path_elements: list[Any] = list(opt.path)  # type: ignore[call-overload]
             for position, path_element in enumerate(path_elements):
-                if position == 0 and isinstance(path_element, AliasedInsp):
-                    # An aliased() entity the option starts from is in the statement's FROM clause,
-                    # which the rewrite handles; the entities it loads are the ones to filter.
-                    continue
+                if isinstance(path_element, AliasedInsp):
+                    if position == 0:
+                        # An aliased() entity the option starts from is in the statement's FROM
+                        # clause, which the rewrite handles; the entities it loads are the ones to filter.
+                        continue
+                    subquery = _subquery_in(path_element.selectable)
+                    if subquery is not None:
+                        reusable = False
+                        if not self._filtered_mappers_in(subquery.element)[1]:
+                            continue
                 entity_class = self._extract_entity_class_from_path_element(path_element)
                 if entity_class is not None and self._is_soft_deletable_entity(entity_class):
                     entities.setdefault(entity_class, None)
 
-        return list(entities)
+        return list(entities), reusable
 
     def _is_soft_deletable_entity(self, entity_class: type) -> bool:
         """Whether ``entity_class`` has the soft-delete column and its table is not ignored."""
@@ -774,28 +539,13 @@ class SoftDeleteQueryRewriter:
         return True
 
     def _extract_entity_class_from_path_element(self, path_element: Any) -> type | None:
-        """Extract the entity class from a path element.
-
-        Handles both SQLAlchemy 1.4 and 2.0 structures:
-        - 1.4: InstrumentedAttribute (QueryableAttribute after of_type()) -> property.mapper.class_
-        - 2.0: Mapper -> class_
-        - an aliased() entity -> its mapper's class_
-        """
-        # SQLAlchemy 2.0: Mapper objects have class_ directly
+        """The entity class of a loader option's path element: a mapper, or an ``aliased()`` entity."""
         if isinstance(path_element, Mapper):
             return path_element.class_
 
         # An aliased() entity in the path (`joinedload(Parent.children.of_type(alias))`)
         if isinstance(path_element, AliasedInsp):
             return path_element.mapper.class_
-
-        # SQLAlchemy 1.4: InstrumentedAttribute (QueryableAttribute for of_type()) -> property.mapper.class_
-        if isinstance(path_element, QueryableAttribute):
-            prop = path_element.property
-            if isinstance(prop, RelationshipProperty):
-                mapper = prop.mapper
-                if isinstance(mapper, Mapper):
-                    return mapper.class_
 
         return None
 
@@ -815,103 +565,179 @@ def _final_froms_without_loader_options(stmt: Select[Any]) -> Any:
     return bare.get_final_froms()
 
 
-def _held_from_subqueries(stmt: Select[Any]) -> list[Subquery]:
-    """The subqueries ``stmt`` itself puts in its FROM clause: ``select_from()``, join targets, and the
-    subqueries its columns and WHERE criteria select from.
+class _FromScan:
+    """The subqueries (and aliases of subqueries) a statement puts in its FROM clause, found by reading
+    the statement, without compiling it.
 
-    This reads the statement without compiling it. A plan is only reused when, for the statement it
-    was made from, this finds the same subqueries as the analysis of the FROM clause.
+    These are the subqueries of ``select_from()``, of joins (target, left side, the target of a
+    relationship), and those the statement's columns and WHERE criteria select from, as such or
+    through an ``aliased()`` entity or a mapped class. A plan is only reused when, for the statement
+    it was made from, this finds the subqueries that the analysis of its FROM clause found.
     """
-    found: dict[int, Subquery] = {}
 
-    def visit(from_obj: Any) -> None:
-        from_obj = _ungrouped(from_obj)
-        if isinstance(from_obj, Annotated):
+    def __init__(self, stmt: Select[Any]) -> None:
+        self.subqueries: dict[int, FromClause] = {}
+        joins = itertools.chain(
+            stmt._setup_joins, *(entities._setup_joins for entities in stmt._memoized_select_entities)
+        )
+        for target, _onclause, from_, _flags in joins:
+            self._visit(_relationship_target(target) if isinstance(target, QueryableAttribute) else target)
+            self._visit(from_)
+        implied = itertools.chain.from_iterable(
+            element._from_objects for element in itertools.chain(stmt._raw_columns, stmt._where_criteria)
+        )
+        for from_obj in itertools.chain(stmt._from_obj, implied):
+            self._visit(from_obj)
+
+    def _visit(self, from_obj: Any) -> None:
+        if from_obj is None:
             return
-        if isinstance(from_obj, Subquery):
-            found.setdefault(id(from_obj), from_obj)
-        elif isinstance(from_obj, Alias):
-            visit(from_obj.element)
-        elif isinstance(from_obj, Join):
-            visit(from_obj.left)
-            visit(from_obj.right)
-
-    joins = list(itertools.chain(stmt._setup_joins, getattr(stmt, "_legacy_setup_joins", ())))
-    implied = itertools.chain.from_iterable(
-        element._from_objects for element in itertools.chain(stmt._raw_columns, stmt._where_criteria)
-    )
-    for from_obj in itertools.chain(stmt._from_obj, (j[0] for j in joins), (j[2] for j in joins), implied):
-        visit(from_obj)
-    return list(found.values())
+        from_obj = _plain(_ungrouped(from_obj))
+        if isinstance(from_obj, Join):
+            self._visit(from_obj.left)
+            self._visit(from_obj.right)
+        elif _subquery_in(from_obj) is not None:
+            self.subqueries.setdefault(id(from_obj), from_obj)
 
 
-def _loader_path_elements(option: Load) -> list[Any]:
-    """The entities and attributes along the paths of a loader option.
+def _place_copies(stmt: Select[Any], copies: dict[int, FromClause]) -> Select[Any]:
+    """A copy of ``stmt`` that selects from ``copies``, keyed by the id of the subquery (or alias of a
+    subquery) that each one replaces.
 
-    An option holds a path for each attribute it loads (``load_only(a.x, a.y)``): SQLAlchemy 2.0 keeps
-    them in the option's context, 1.4 keeps those of an option that is not bound to an entity in
-    ``_to_bind``. Their elements are entities, attributes (1.4) or properties (2.0), and tokens.
+    Only the FROM clause changes. The statement's columns, criteria, entities and loader options keep
+    referring to the original subqueries: SQLAlchemy keys result rows by those objects
+    (``row._mapping[subquery.c.x]``, ``row._mapping[alias]``), and the ORM recognizes entities by
+    identity. They render the same against a copy, which has the same name and columns, and
+    SQLAlchemy leaves a subquery out of the FROM clause when a clone of it is there, which the copies
+    are:
+
+    - where the statement names a subquery as a FROM (``select_from()``, the target or left side of a
+      join, the target of a join along a relationship), the copy takes its place, with the copy's
+      columns in the join's ON clause;
+    - a subquery that the statement selects from only through its columns, criteria or entities gets
+      its copy added to the FROM list, which SQLAlchemy reads before them.
     """
-    loaders = [option, *getattr(option, "_to_bind", ())]
-    context = getattr(option, "context", ())
-    if isinstance(context, tuple):
-        loaders.extend(context)
-    elements: list[Any] = []
-    for loader in loaders:
-        path = getattr(loader, "path", None)
-        # A path registry keeps its elements in `path`; a path of an unbound 1.4 option is a tuple.
-        elements.extend(getattr(path, "path", path) or ())
-    return elements
+    placed: set[int] = set()
+
+    def copy_of(from_obj: Any) -> Any:
+        if from_obj is None:
+            return None
+        key = id(_plain(_ungrouped(from_obj)))
+        copy = copies.get(key)
+        if copy is not None:
+            placed.add(key)
+        return copy
+
+    def swap_from(from_obj: Any) -> Any:
+        copy = copy_of(from_obj)
+        if copy is not None:
+            return copy
+        if isinstance(_plain(_ungrouped(from_obj)), Join):
+            # A join written with Core, which holds subqueries.
+            return visitors.replacement_traverse(
+                from_obj, {}, lambda element, **kw: copy_of(element) if _subquery_in(element) is not None else None
+            )
+        return from_obj
+
+    def swap_columns(clause: Any) -> Any:
+        def replace(element: Any, **kw: Any) -> Any:
+            table = element.table if isinstance(element, ColumnClause) else None
+            copy = copies.get(id(_plain(table))) if table is not None else None
+            return copy.c[element.key] if copy is not None else None
+
+        return visitors.replacement_traverse(clause, {}, replace)
+
+    def swap_join(join: tuple[Any, ...]) -> tuple[Any, ...]:
+        target, onclause, from_, flags = join
+        # A join along a relationship goes to an entity: one over the copy takes the place of the
+        # original (SQLAlchemy builds such an entity itself for a selectable, with a deprecation warning).
+        if isinstance(target, QueryableAttribute) and onclause is None:
+            # join(Parent.children): to the relationship's target, or its of_type() entity
+            entity = _relationship_entity(target)
+            copy = copy_of(entity.selectable) if entity is not None else None
+            new_target, new_onclause = (target, onclause) if copy is None else (_entity_over(entity, copy), target)
+        elif isinstance(onclause, QueryableAttribute):
+            # join(entity, Parent.children): to the given entity
+            copy = copy_of(target)
+            entity = _annotated_entity(target) or _relationship_entity(onclause)
+            new_target, new_onclause = (target, onclause) if copy is None else (_entity_over(entity, copy), onclause)
+        else:
+            new_target, new_onclause = swap_from(target), onclause
+        new_from = swap_from(from_) if from_ is not None else None
+        if new_target is target and new_from is from_:
+            return join
+        if new_onclause is not None and not isinstance(new_onclause, QueryableAttribute):
+            # Columns of the original would let SQLAlchemy join from the original as well.
+            new_onclause = swap_columns(new_onclause)
+        return (new_target, new_onclause, new_from, flags)
+
+    def swap_joins(joins: tuple[Any, ...]) -> tuple[Any, ...]:
+        swapped = tuple(swap_join(join) for join in joins)
+        return joins if all(new is old for new, old in zip(swapped, joins)) else swapped
+
+    # The new statement is this function's own copy: setting its attributes modifies nothing else.
+    rewritten = stmt._generate()
+    rewritten._from_obj = tuple(swap_from(from_obj) for from_obj in stmt._from_obj)
+    rewritten._setup_joins = swap_joins(stmt._setup_joins)
+    if stmt._memoized_select_entities:
+        # with_only_columns() sets the statement's earlier joins aside.
+        memoized = []
+        for entities in stmt._memoized_select_entities:
+            joins = swap_joins(entities._setup_joins)
+            if joins is not entities._setup_joins:
+                entities = entities._clone()
+                entities._setup_joins = joins
+            memoized.append(entities)
+        rewritten._memoized_select_entities = tuple(memoized)
+    unplaced = tuple(copy for key, copy in copies.items() if key not in placed)
+    if unplaced:
+        rewritten._from_obj = rewritten._from_obj + unplaced
+    return rewritten
 
 
-def _selects_rows_of_one_table(element: Any) -> bool:
-    """Whether ``element`` is a SELECT of rows of one table and nothing else: columns of the table, WHERE
-    criteria and ORDER BY on it, and no joins, grouping, DISTINCT, LIMIT, prefixes or nested SELECTs.
-
-    Filtering the rows of such a SELECT outside of it keeps the rows that filtering inside it would.
-    """
-    if not isinstance(element, Select) or not element._raw_columns:
-        return False
-    if (
-        element._setup_joins
-        or getattr(element, "_legacy_setup_joins", ())
-        or getattr(element, "_memoized_select_entities", ())
-        or getattr(element, "_independent_ctes", ())
-        or element._group_by_clauses
-        or element._having_criteria
-        or element._distinct
-        or element._distinct_on
-        or element._limit_clause is not None
-        or element._offset_clause is not None
-        or element._fetch_clause is not None
-        or element._prefixes
-        or element._suffixes
-    ):
-        return False
-
-    tables: set[Table] = set()
-    for column in element._raw_columns:
-        while isinstance(column, Label):
-            column = column.element
-        column = column._deannotate() if isinstance(column, Annotated) else column
-        table = column.table if isinstance(column, Column) else column
-        if not isinstance(table, Table):
-            return False
-        tables.add(table)
-    implied = itertools.chain.from_iterable(criterion._from_objects for criterion in element._where_criteria)
-    for from_obj in itertools.chain(element._from_obj, implied):
-        from_obj = from_obj._deannotate() if isinstance(from_obj, Annotated) else from_obj
-        if not isinstance(from_obj, Table):
-            return False
-        tables.add(from_obj)
-    if len(tables) != 1:
-        return False
-    return not any(isinstance(child, SelectBase) for child in visitors.iterate(element) if child is not element)
+def _relationship_entity(attr: QueryableAttribute[Any]) -> Any:
+    """The entity a join along a relationship attribute joins to: its ``of_type()`` entity, or the
+    relationship's own target (a class, or an ``aliased()`` class)."""
+    prop = attr.property
+    if not isinstance(prop, RelationshipProperty):
+        return None
+    entity: Any = attr._of_type if attr._of_type is not None else prop.entity
+    return inspect(entity)
 
 
-def _mapper_selectables(mapper: Mapper[Any]) -> list[Any]:
-    """What a mapper selects from: its table, or its with_polymorphic() selectable."""
-    return [mapper.local_table, mapper.persist_selectable, mapper.selectable, mapper._with_polymorphic_selectable]
+def _relationship_target(attr: QueryableAttribute[Any]) -> Any:
+    """The selectable a join along a relationship attribute joins to."""
+    entity = _relationship_entity(attr)
+    return entity.selectable if entity is not None else None
+
+
+def _annotated_entity(element: Any) -> Any:
+    """The entity (mapper or ``aliased()`` entity) an ORM-annotated element belongs to, if any."""
+    return element._annotations.get("parententity") if isinstance(element, Annotated) else None
+
+
+def _entity_over(insp: Any, selectable: FromClause) -> Any:
+    """A join target like the entity ``insp`` (a mapper, or an ``aliased()`` entity), over ``selectable``:
+    an ``aliased()`` entity with the same settings."""
+    if isinstance(insp, AliasedInsp):
+        entity = AliasedClass(
+            insp.mapper,
+            alias=selectable,
+            name=insp.name,
+            with_polymorphic_mappers=insp.with_polymorphic_mappers if insp._is_with_polymorphic else (),
+            with_polymorphic_discriminator=insp.polymorphic_on,
+            adapt_on_names=insp._adapt_on_names,
+            use_mapper_path=insp._use_mapper_path,
+            represents_outer_join=insp.represents_outer_join,
+        )
+    else:
+        entity = AliasedClass(insp.mapper, alias=selectable)
+    return inspect(entity).__clause_element__()
+
+
+def _plain(element: Any) -> Any:
+    """``element`` without the ORM's annotations: the object the statement was built with."""
+    return element._deannotate() if isinstance(element, Annotated) else element
 
 
 def _subquery_in(selectable: Any) -> Subquery | None:
@@ -925,13 +751,18 @@ def _subquery_in(selectable: Any) -> Subquery | None:
         return None
 
 
+def _inner_statement(selectable: Any) -> Any:
+    """The statement inside a subquery, or inside the subquery an alias wraps."""
+    return cast(Subquery, _subquery_in(selectable)).element
+
+
 def _selects_from_mapper(element: Any, mapper: Mapper[Any]) -> bool:
     """Whether an ORM element selects from its mapper's own tables (its entity, or one of its columns),
     rather than from a subquery whose columns carry the mapper's annotations."""
     table = element if isinstance(element, FromClause) else getattr(element, "table", None)
     if table is None:
         return False
-    table = table._deannotate() if isinstance(table, Annotated) else table
+    table = _plain(table)
     return any(table is mapped for mapped in mapper.tables)
 
 
@@ -942,27 +773,13 @@ def _ungrouped(from_obj: Any) -> Any:
     return from_obj
 
 
-def _relationship_join_parts(stmt: Select[Any]) -> list[QueryableAttribute[Any]]:
-    """The relationship attributes of a statement's joins (SQLAlchemy 1.4 keeps Query joins apart)."""
-    joins = itertools.chain(stmt._setup_joins, getattr(stmt, "_legacy_setup_joins", ()))
-    return [part for join in joins for part in join[:3] if isinstance(part, QueryableAttribute)]
-
-
-def _can_rebuild(insp: AliasedInsp[Any]) -> bool:
-    """Whether an ``aliased()`` entity can be recreated over another selectable (not ``with_polymorphic()``)."""
-    return insp._base_alias() is insp and len(insp.with_polymorphic_mappers) <= 1
-
-
-def _alias_over(insp: AliasedInsp[Any], subquery: Subquery) -> AliasedInsp[Any]:
-    """An ``aliased()`` entity like ``insp``, over ``subquery``."""
-    entity = AliasedClass(
-        insp.mapper,
-        alias=subquery,
-        name=insp.name,
-        adapt_on_names=insp._adapt_on_names,
-        use_mapper_path=insp._use_mapper_path,
-    )
-    return cast("AliasedInsp[Any]", inspect(entity))
+def _copy_selectable(selectable: Any, element: Any) -> Any:
+    """A copy of a subquery or alias (same name, so the same SQL) around a different element, which
+    SQLAlchemy knows as a clone of the original."""
+    copy = selectable._clone()
+    copy.element = element
+    copy._reset_column_collection()
+    return copy
 
 
 class _LambdaRewriteToken:
@@ -1022,84 +839,3 @@ def __getattr__(name: str) -> Any:
         else:
             return _is_null_criteria(field_name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-
-
-def _copy_subquery(subquery: Subquery, element: Any) -> Subquery:
-    """A copy of ``subquery`` (same name, so the same SQL) around a different statement."""
-    copy = subquery._clone()
-    copy.element = element
-    copy._reset_column_collection()
-    return copy
-
-
-def _replace_in_statement(
-    stmt: Select[Any],
-    copies: dict[int, Subquery],
-    aliases: dict[int, tuple[AliasedInsp[Any], AliasedInsp[Any]]],
-) -> Select[Any]:
-    """A copy of ``stmt`` in which subqueries are replaced by their ``copies``, and ``aliases`` entities
-    (keyed by the id of the old entity) by the new entities over those copies."""
-    replacements: dict[int, tuple[Any, Any]] = {}
-    for old, new in aliases.values():
-        replacements[id(old)] = (old, new)
-        replacements[id(old.entity)] = (old.entity, new.entity)
-
-    def swap(value: Any) -> Any:
-        pair = replacements.get(id(value))
-        return pair[1] if pair is not None and pair[0] is value else value
-
-    def plain(element: Any, **kw: Any) -> Any:
-        copy = copies.get(id(element))
-        if copy is not None:
-            return copy
-        if isinstance(element, ColumnClause) and element.table is not None:
-            copy = copies.get(id(element.table))
-            if copy is not None:
-                column = copy.c[element.key]
-                return column._annotate(element._annotations) if element._annotations else column
-        return None
-
-    def replace(element: Any, **kw: Any) -> Any:
-        if isinstance(element, Annotated):
-            annotations = element._annotations
-            if any(swap(value) is not value for value in annotations.values()):
-                # An element of a replaced aliased() entity: the same element, of the new entity.
-                rebuilt = visitors.replacement_traverse(element._deannotate(), {}, plain)
-                return rebuilt._annotate({key: swap(value) for key, value in annotations.items()})
-            if isinstance(annotations.get("parententity"), AliasedInsp):
-                # The ORM tracks other aliased() entities by identity: keep these objects as they are.
-                return element
-        return plain(element)
-
-    # Executable options (loader options, with_loader_criteria) are not traversable clause elements.
-    stop_on = [option for element in visitors.iterate(stmt) for option in getattr(element, "_with_options", ())]
-    rewritten = cast(Select[Any], visitors.replacement_traverse(stmt, {"stop_on": stop_on}, replace))
-    if not aliases:
-        return rewritten
-
-    def rebuild(part: Any) -> Any:
-        if not isinstance(part, QueryableAttribute):
-            return part
-        parent, of_type = part.parent, part._of_type
-        if swap(parent) is parent and (of_type is None or swap(of_type) is of_type):
-            return part
-        attribute = getattr(swap(parent).entity, part.key)
-        if of_type is not None:
-            attribute = attribute.of_type(swap(of_type).entity)
-        if part._extra_criteria:
-            attribute = attribute.and_(
-                *(visitors.replacement_traverse(c, {"stop_on": stop_on}, replace) for c in part._extra_criteria)
-            )
-        return attribute
-
-    # The new statement is this function's own copy: setting its attributes modifies nothing else.
-    rewritten._setup_joins = tuple((rebuild(j[0]), rebuild(j[1]), *j[2:]) for j in rewritten._setup_joins)
-    legacy_joins = getattr(rewritten, "_legacy_setup_joins", None)
-    if legacy_joins:
-        rewritten._legacy_setup_joins = tuple(  # type: ignore[attr-defined]
-            (rebuild(j[0]), rebuild(j[1]), *j[2:]) for j in legacy_joins
-        )
-    subject = rewritten._propagate_attrs.get("plugin_subject")
-    if subject is not None and swap(subject) is not subject:
-        rewritten._propagate_attrs = immutabledict(rewritten._propagate_attrs).union({"plugin_subject": swap(subject)})
-    return rewritten
