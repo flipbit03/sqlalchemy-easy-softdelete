@@ -15,7 +15,7 @@ from sqlalchemy.orm import aliased, joinedload, selectinload, subqueryload
 from sqlalchemy.sql import Select
 
 from sqlalchemy_easy_softdelete.handler.rewriter import DEFAULT_REWRITE_CACHE_SIZE, SoftDeleteQueryRewriter
-from tests.default_config.model import SDChild, SDChildChild, SDParent, SoftDeleteMixin, SDSimpleTable
+from tests.default_config.model import SDChild, SDChildChild, SDParent, SDSimpleTable, SoftDeleteMixin
 
 
 def _rewriter(rewrite_cache_size: int = DEFAULT_REWRITE_CACHE_SIZE) -> SoftDeleteQueryRewriter:
@@ -131,9 +131,9 @@ def test_a_subquery_reached_through_an_aliased_entity_is_analyzed_every_time():
 
 
 TWINS: dict[str, Callable[[bool], Any]] = {
-    "held_subquery": lambda disabled: (
-        lambda sq: select(SDParent.id).join(sq, sq.c.parent_id == SDParent.id)
-    )(select(SDChild.parent_id).execution_options(include_deleted=disabled).subquery()),
+    "held_subquery": lambda disabled: (lambda sq: select(SDParent.id).join(sq, sq.c.parent_id == SDParent.id))(
+        select(SDChild.parent_id).execution_options(include_deleted=disabled).subquery()
+    ),
     "aliased_subquery": lambda disabled: select(
         aliased(SDChild, select(SDChild).execution_options(include_deleted=disabled).subquery())
     ),

@@ -107,9 +107,7 @@ def test_eager_load_with_limit_filters_the_queried_entity(seeded_session):
 
 
 def test_query_first_with_eager_load_filters_the_queried_entity(seeded_session):
-    parent = (
-        seeded_session.query(SDParent).options(joinedload(SDParent.children)).order_by(SDParent.id.desc()).first()
-    )
+    parent = seeded_session.query(SDParent).options(joinedload(SDParent.children)).order_by(SDParent.id.desc()).first()
 
     assert parent is not None
     assert parent.id != DELETED_PARENT_ID
