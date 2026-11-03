@@ -8,6 +8,7 @@ SQLA_VERSIONS = {
     "3.12": ["2.0.55", "2.0.30", "2.0.20"],
     "3.13": ["2.0.55"],  # Only 2.0.35+ supports Python 3.13
     "3.14": ["2.0.55"],  # Only 2.0.35+ supports Python 3.14
+    "3.15": ["2.0.55"],  # SQLAlchemy declares Python 3.15 support from 2.0.52
 }
 
 
