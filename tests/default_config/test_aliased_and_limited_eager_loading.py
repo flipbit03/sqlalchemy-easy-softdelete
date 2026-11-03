@@ -609,3 +609,27 @@ def test_eager_load_into_an_aliased_subquery_that_includes_deleted_loads_them(se
         .execution_options(include_deleted=True)
     )
     assert sorted(child.id for parent in parents for child in parent.children) == sorted(expected)
+
+
+@pytest.mark.parametrize("outer", [False, True], ids=["join", "outerjoin"])
+def test_join_from_an_aliased_subquery_along_its_relationship(seeded_session, outer):
+    alias = _aliased_active_children()
+    join_from = select(alias.id).outerjoin_from if outer else select(alias.id).join_from
+
+    ids = sorted(seeded_session.scalars(join_from(alias, alias.parent)))
+
+    # The parent's filter is in the WHERE clause, so an outer join drops the children of deleted parents too.
+    assert ids == _active_child_ids_of_active_parents(seeded_session)
+
+
+def test_eager_load_next_to_an_aliased_subquery_without_the_soft_delete_column(seeded_session):
+    """The eager loading criteria leave out an aliased() entity whose subquery has no soft-delete column,
+    which they would filter on the class's own table, adding that table to the FROM clause (one row per
+    row of the table)."""
+    ids = aliased(SDChild, select(SDChild.id, SDChild.parent_id).subquery())
+    stmt = select(SDParent, ids.id).join(ids, ids.parent_id == SDParent.id).options(selectinload(SDParent.children))
+
+    rows = seeded_session.execute(stmt).all()
+
+    assert sorted(child_id for _, child_id in rows) == _active_child_ids_of_active_parents(seeded_session)
+    assert all(child.deleted_at is None for parent, _ in rows for child in parent.children)
