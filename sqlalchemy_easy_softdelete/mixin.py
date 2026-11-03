@@ -59,7 +59,8 @@ def generate_soft_delete_mixin_class(
         rewrite_cache_size=rewrite_cache_size,
     )
 
-    # Store rewriter on the generated class for testing purposes
+    # Store the rewriter on the generated class: tests use it, and it reports the rewrite cache's
+    # statistics (`_sqlalchemy_easy_softdelete_rewriter.rewrite_cache_info()`).
     class_attributes["_sqlalchemy_easy_softdelete_rewriter"] = rewriter
 
     generated_class = type(class_name, tuple(), class_attributes)

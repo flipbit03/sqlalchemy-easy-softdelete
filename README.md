@@ -87,14 +87,14 @@ class SoftDeleteMixin(generate_soft_delete_mixin_class(rewrite_cache_size=2000))
     deleted_at: Mapped[datetime | None]
 ```
 
-Each entry takes about 3-4 KB, most of it the statement's cache key. To see how well the size fits, read the cache statistics of the mixin's rewriter: a `misses` count that keeps growing while `size` stays at `max_size` means the cache is too small.
+Each entry takes 1-4 KB, most of it the statement's cache key. To see how well the size fits, read the cache statistics of the mixin's rewriter. `misses` counts the statement shapes that were analyzed and then remembered: a `misses` count that keeps growing while `size` stays at `max_size` means the cache is too small.
 
 ```py
 SoftDeleteMixin._sqlalchemy_easy_softdelete_rewriter.rewrite_cache_info()
-# RewriteCacheInfo(hits=48210, misses=212, size=212, max_size=500)
+# RewriteCacheInfo(hits=48210, misses=212, uncacheable=35, size=212, max_size=500)
 ```
 
-Statements that select from a subquery through an `aliased()` entity are analyzed on every execution.
+`uncacheable` counts the statements whose rewrite cannot be remembered, and is redone on every execution: statements that select from a subquery through an `aliased()` entity, and statements without a SQLAlchemy cache key.
 
 ### Contributing
 

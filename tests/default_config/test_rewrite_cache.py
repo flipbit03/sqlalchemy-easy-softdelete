@@ -10,7 +10,7 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
-from sqlalchemy import Integer, column, func, lambda_stmt, select, text, union, values
+from sqlalchemy import Integer, column, func, lambda_stmt, select, text, true, union, values
 from sqlalchemy.orm import aliased, joinedload, selectinload, subqueryload
 from sqlalchemy.sql import Select
 
@@ -88,7 +88,8 @@ def test_a_repeated_statement_shape_is_analyzed_once():
             rewriter.rewrite_statement(select(SDChild).join(SDChild.parent))
 
     assert final_froms.call_count == 1
-    assert rewriter.rewrite_cache_info()[:3] == (2, 1, 1)
+    info = rewriter.rewrite_cache_info()
+    assert (info.hits, info.misses, info.uncacheable, info.size) == (2, 1, 0, 1)
 
 
 def test_statements_differing_only_in_parameter_values_share_a_plan():
@@ -120,42 +121,68 @@ def test_a_statement_holding_a_subquery_reuses_its_plan():
 
 
 def test_a_subquery_reached_through_an_aliased_entity_is_analyzed_every_time():
+    """The plan refers to the aliased() entity of each statement, so it is not remembered; the
+    statement inside the subquery has a plan of its own, which is."""
     rewriter = _rewriter()
 
     with _count_final_froms() as final_froms:
         for _ in range(3):
             rewriter.rewrite_statement(_aliased_subquery())
 
-    assert final_froms.call_count == 3
-    assert rewriter.rewrite_cache_info().size == 0
+    assert final_froms.call_count == 3 + 1
+    info = rewriter.rewrite_cache_info()
+    assert (info.uncacheable, info.misses, info.size) == (3, 1, 1)
 
 
-TWINS: dict[str, Callable[[bool], Any]] = {
-    "held_subquery": lambda disabled: (lambda sq: select(SDParent.id).join(sq, sq.c.parent_id == SDParent.id))(
-        select(SDChild.parent_id).execution_options(include_deleted=disabled).subquery()
+def _active(entity: Any, disabled: bool = False) -> Any:
+    return true() if disabled else entity.deleted_at.is_(None)
+
+
+# Each case: (builds the statement, whose nested statement includes soft-deleted rows when `disabled`;
+# builds the expected rows' statement, filtered explicitly)
+TWINS: dict[str, tuple[Callable[[bool], Any], Callable[[bool], Any]]] = {
+    "held_subquery": (
+        lambda disabled: (lambda sq: select(SDParent.id).join(sq, sq.c.parent_id == SDParent.id))(
+            select(SDChild.parent_id).execution_options(include_deleted=disabled).subquery()
+        ),
+        lambda disabled: (
+            select(SDParent.id)
+            .join(SDChild, SDChild.parent_id == SDParent.id)
+            .where(_active(SDParent), _active(SDChild, disabled))
+        ),
     ),
-    "aliased_subquery": lambda disabled: select(
-        aliased(SDChild, select(SDChild).execution_options(include_deleted=disabled).subquery())
+    "aliased_subquery": (
+        lambda disabled: select(
+            aliased(SDChild, select(SDChild).execution_options(include_deleted=disabled).subquery()).id
+        ),
+        lambda disabled: select(SDChild.id).where(_active(SDChild, disabled)),
     ),
-    "union_member": lambda disabled: (lambda sq: select(sq.c.id))(
-        union(select(SDChild.id), select(SDChildChild.id).execution_options(include_deleted=disabled)).subquery()
+    "union_member": (
+        lambda disabled: (lambda sq: select(sq.c.id))(
+            union(select(SDChild.id), select(SDChildChild.id).execution_options(include_deleted=disabled)).subquery()
+        ),
+        lambda disabled: union(
+            select(SDChild.id).where(_active(SDChild)), select(SDChildChild.id).where(_active(SDChildChild, disabled))
+        ),
     ),
 }
 
 
-@pytest.mark.parametrize("make", TWINS.values(), ids=TWINS.keys())
-def test_include_deleted_inside_a_subquery_is_honored_by_same_shape_statements(seeded_session, make):
+@pytest.mark.parametrize("make, make_expected", TWINS.values(), ids=TWINS.keys())
+def test_include_deleted_inside_a_subquery_is_honored_by_same_shape_statements(seeded_session, make, make_expected):
     """Execution options are not part of a cache key: both statements have the same one."""
     assert make(True)._generate_cache_key().key == make(False)._generate_cache_key().key
     uncached = _rewriter(rewrite_cache_size=0)
-    expected = {disabled: _compiled(uncached.rewrite_statement(make(disabled))) for disabled in (False, True)}
-    assert expected[False] != expected[True]
+    expected_sql = {disabled: _compiled(uncached.rewrite_statement(make(disabled))) for disabled in (False, True)}
+    assert expected_sql[False] != expected_sql[True]
 
     cached = _rewriter()
     for disabled in (False, True, False, True):
-        assert _compiled(cached.rewrite_statement(make(disabled))) == expected[disabled]
+        assert _compiled(cached.rewrite_statement(make(disabled))) == expected_sql[disabled]
         # Through the session's hook as well, against the database.
-        seeded_session.execute(make(disabled)).all()
+        rows = sorted(seeded_session.execute(make(disabled)).all())
+        expected = sorted(seeded_session.execute(make_expected(disabled).execution_options(include_deleted=True)).all())
+        assert rows == expected
 
 
 def test_least_recently_used_shape_is_evicted():
@@ -181,7 +208,7 @@ def test_zero_cache_size_disables_the_cache():
             rewriter.rewrite_statement(select(SDChild))
 
     assert final_froms.call_count == 3
-    assert rewriter.rewrite_cache_info() == (0, 0, 0, 0)
+    assert rewriter.rewrite_cache_info() == (0, 0, 0, 0, 0)
 
 
 def test_negative_cache_size_is_rejected():
@@ -202,7 +229,8 @@ def test_a_statement_without_a_cache_key_is_analyzed_every_time():
             assert "sdsimpletable.deleted_at IS NULL" in _compiled(rewriter.rewrite_statement(make()))[0]
 
     assert final_froms.call_count == 2
-    assert rewriter.rewrite_cache_info().size == 0
+    info = rewriter.rewrite_cache_info()
+    assert (info.uncacheable, info.misses, info.size) == (2, 0, 0)
 
 
 def test_the_default_cache_size():
