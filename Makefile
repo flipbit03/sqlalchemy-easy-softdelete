@@ -56,4 +56,4 @@ pg-stop:
 # Install all Python versions needed for nox
 # Run this once to set up multi-version testing
 python-versions:
-	uv python install 3.10 3.11 3.12 3.13 3.14
+	uv python install 3.10 3.11 3.12 3.13 3.14 3.15
