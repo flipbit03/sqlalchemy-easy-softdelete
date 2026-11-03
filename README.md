@@ -74,6 +74,28 @@ all_fruits = session.query(Fruit).execution_options(include_deleted=True).all()
 ```
 Setting `include_deleted=True` (attribute name can be customized) in the query disables soft delete for that query.
 
+The rewrite never modifies your statement or anything inside it, so statements, subqueries and `lambda_stmt()` objects can be built once and executed many times, with or without `include_deleted`.
+
+### Rewrite cache
+
+To know which tables a SELECT reads from, the library has SQLAlchemy work out the statement's final FROM clause, which for an ORM statement runs SQLAlchemy's ORM compilation of it, outside of SQLAlchemy's own compiled cache. The library remembers what it adds to a statement by the statement's cache key, so later statements of the same shape (the same SQL, with any parameter values) skip that work.
+
+The cache holds 500 statement shapes by default, the same as SQLAlchemy's default `query_cache_size`. An application with more distinct statements can raise it, and `0` disables it:
+
+```py
+class SoftDeleteMixin(generate_soft_delete_mixin_class(rewrite_cache_size=2000)):  # type: ignore[misc]
+    deleted_at: Mapped[datetime | None]
+```
+
+Each entry takes about 3-4 KB, most of it the statement's cache key. To see how well the size fits, read the cache statistics of the mixin's rewriter: a `misses` count that keeps growing while `size` stays at `max_size` means the cache is too small.
+
+```py
+SoftDeleteMixin._sqlalchemy_easy_softdelete_rewriter.rewrite_cache_info()
+# RewriteCacheInfo(hits=48210, misses=212, size=212, max_size=500)
+```
+
+Statements that select from a subquery through an `aliased()` entity are analyzed on every execution.
+
 ### Contributing
 
 Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and guidelines.
