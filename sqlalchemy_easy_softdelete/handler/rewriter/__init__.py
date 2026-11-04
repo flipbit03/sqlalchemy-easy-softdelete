@@ -215,11 +215,17 @@ class SoftDeleteQueryRewriter:
 
         # Handle FromStatement which is also a Select/Executable
         if isinstance(stmt, FromStatement):
-            # Explicitly protect against INSERT with RETURNING
-            if not isinstance(stmt.element, Select) or self._is_disabled(stmt):
+            if self._is_disabled(stmt):
                 return stmt
             # The element is what SQLAlchemy compiles: loader criteria apply from there.
-            element = self.rewrite_select(stmt.element)
+            element: Any
+            if isinstance(stmt.element, Select):
+                element = self.rewrite_select(stmt.element)
+            elif isinstance(stmt.element, CompoundSelect):
+                element = self.rewrite_compound_select(stmt.element)
+            else:
+                # INSERT/UPDATE/DELETE ... RETURNING, and textual SQL, are left as they are.
+                return stmt
             if element is stmt.element:
                 return stmt
             rewritten = stmt._generate()
@@ -294,7 +300,10 @@ class SoftDeleteQueryRewriter:
             return member if element is member.element else SelectStatementGrouping(element)
         if isinstance(member, CompoundSelect):
             return self.rewrite_compound_select(member)
-        return self.rewrite_select(cast(Select[Any], member))
+        if not isinstance(member, Select):
+            # A member of textual SQL (text(...).columns(...)): there is nothing to filter.
+            return member
+        return self.rewrite_select(member)
 
     def _is_disabled(self, stmt: Any) -> bool:
         """Whether the statement disables soft-delete filtering with the configured execution option."""
