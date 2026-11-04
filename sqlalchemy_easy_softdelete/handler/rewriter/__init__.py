@@ -242,11 +242,13 @@ class SoftDeleteQueryRewriter:
         resolved = stmt._resolved
 
         # Rewrite based on the type of the resolved statement
-        rewritten_resolved: Select[Any] | CompoundSelect
+        rewritten_resolved: Any
         if isinstance(resolved, Select):
             rewritten_resolved = self.rewrite_select(resolved)
         elif isinstance(resolved, CompoundSelect):
             rewritten_resolved = self.rewrite_compound_select(resolved)
+        elif isinstance(resolved, FromStatement):
+            rewritten_resolved = self.rewrite_statement(resolved)
         else:
             raise NotImplementedError(f'Unsupported statement type "{type(resolved)}" inside LambdaElement._resolved')
 

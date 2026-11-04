@@ -30,9 +30,12 @@ def activate_soft_delete_hook(
     # Enable Soft Delete on all Relationship Loads which implement SoftDeleteMixin
     @listens_for(Session, identifier="do_orm_execute")
     def soft_delete_execute(state: ORMExecuteState):
-        # Before SQLAlchemy 2.0.30, is_select is False for select(...).from_statement(select(...)).
-        # rewrite_statement() leaves a from_statement() of anything but a SELECT as it is.
-        if not state.is_select and not isinstance(state.statement, FromStatement):
+        # Before SQLAlchemy 2.0.30, is_select is False for select(...).from_statement(...), also inside a
+        # lambda_stmt(). The rewriter leaves a from_statement() of INSERT/UPDATE/DELETE ... RETURNING or
+        # of textual SQL as it is.
+        if not state.is_select and not isinstance(
+            getattr(state.statement, "_resolved", state.statement), FromStatement
+        ):
             return
 
         # The option can also be given at execution time (Session.execute(..., execution_options=...),
