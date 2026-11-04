@@ -26,6 +26,7 @@ from sqlalchemy.sql.selectable import (
     FromGrouping,
     SelectBase,
     SelectStatementGrouping,
+    TextualSelect,
     Values,
 )
 
@@ -522,6 +523,10 @@ class SoftDeleteQueryRewriter:
         if isinstance(element, Select):
             return self.rewrite_select(element)
 
+        if isinstance(element, TextualSelect):
+            # Raw SQL (text(...).columns(...)): there is nothing to filter, as for raw SQL in the FROM clause.
+            return element
+
         raise NotImplementedError(f'Unsupported object "{(type(element))}" in subquery.element')
 
     def _filtered_mappers_in(self, element: Any) -> tuple[list[Mapper[Any]], bool]:
@@ -534,6 +539,10 @@ class SoftDeleteQueryRewriter:
         while stack:
             child = stack.pop()
             if isinstance(child, (Select, CompoundSelect)) and self._is_disabled(child):
+                fully_filtered = False
+                continue
+            if isinstance(child, TextualSelect):
+                # Raw SQL is left as it is: its rows may include soft-deleted ones.
                 fully_filtered = False
                 continue
             mapper = getattr(child, "_annotations", {}).get("parentmapper")
