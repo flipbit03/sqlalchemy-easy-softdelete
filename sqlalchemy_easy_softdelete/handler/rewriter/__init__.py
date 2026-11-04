@@ -14,10 +14,10 @@ from typing import Any, NamedTuple, cast
 
 import sqlalchemy
 from sqlalchemy import Column, Table, inspect
-from sqlalchemy.orm import FromStatement, Mapper, RelationshipProperty, with_loader_criteria
+from sqlalchemy.orm import FromStatement, Mapper, RelationshipProperty
 from sqlalchemy.orm.attributes import QueryableAttribute
 from sqlalchemy.orm.strategy_options import Load
-from sqlalchemy.orm.util import AliasedClass, AliasedInsp
+from sqlalchemy.orm.util import AliasedClass, AliasedInsp, LoaderCriteriaOption
 from sqlalchemy.sql import Alias, CompoundSelect, Executable, Join, Select, Subquery, TableClause, visitors
 from sqlalchemy.sql import util as sql_util
 from sqlalchemy.sql.annotation import Annotated
@@ -37,6 +37,7 @@ from sqlalchemy.sql.selectable import (
     TextualSelect,
     Values,
 )
+from sqlalchemy.sql.visitors import InternalTraversal
 
 from sqlalchemy_easy_softdelete.hook import IgnoredTable
 
@@ -361,15 +362,53 @@ class SoftDeleteQueryRewriter:
         return bool(stmt.get_execution_options().get(self.disable_soft_delete_option_name))
 
     def _with_criteria(self, stmt: Any, criteria: _Criteria) -> Any:
-        """``stmt`` with ``with_loader_criteria`` options for ``criteria``."""
+        """``stmt`` with ``with_loader_criteria`` options for ``criteria`` (``_SoftDeleteCriteria``, which leaves
+        out the SELECTs that disable soft-delete filtering)."""
         if not criteria:
             return stmt
+        disabled = self._disabled_from_selects(stmt)
         return stmt.options(
             *(
-                with_loader_criteria(entity, self._is_not_deleted, include_aliases=include_aliases)
+                _SoftDeleteCriteria(
+                    entity,
+                    self._is_not_deleted,
+                    include_aliases=include_aliases,
+                    disable_option_name=self.disable_soft_delete_option_name,
+                    disabled=disabled,
+                )
                 for entity, include_aliases in criteria.items()
             )
         )
+
+    def _disabled_from_selects(self, stmt: Any) -> frozenset[int]:
+        """The ids of the SELECTs the eager loading criteria leave out (see ``_SoftDeleteCriteria``): those of
+        the subqueries in the FROM clause of ``stmt``, or in that of the subqueries in it, at any depth, that
+        disable soft-delete filtering, with what is nested in them, and the SELECTs they are clones of."""
+        disabled: set[int] = set()
+        self._collect_disabled_from_selects(stmt, disabled, set())
+        return frozenset(disabled)
+
+    def _collect_disabled_from_selects(self, stmt: Any, disabled: set[int], seen: set[int]) -> None:
+        if isinstance(stmt, CompoundSelect):
+            for member in stmt.selects:
+                self._collect_disabled_from_selects(member, disabled, seen)
+            return
+        if not isinstance(stmt, Select):
+            return
+        for from_obj in _FromScan(stmt).subqueries.values():
+            subquery = _subquery_in(from_obj)
+            # A recursive CTE is in the FROM clause of its own statement.
+            if subquery is None or id(subquery) in seen:
+                continue
+            seen.add(id(subquery))
+            if not self._is_disabled(subquery.element):
+                self._collect_disabled_from_selects(subquery.element, disabled, seen)
+                continue
+            for element in visitors.iterate(subquery.element):
+                if isinstance(element, (Select, CompoundSelect)):
+                    disabled.add(id(element))
+                    if element._is_clone_of is not None:
+                        disabled.add(id(element._is_clone_of))
 
     def _plan_for(self, stmt: Select[Any]) -> tuple[_SelectPlan, _FromAnalysis | None]:
         """The plan for ``stmt``, a remembered one for its shape or a new one, and, for a new one, what
@@ -1298,6 +1337,66 @@ class _LambdaRewriteToken:
 _CRITERIA_TEMPLATE = (lambda cls: cls._soft_delete_field_.is_(None)).__code__
 _CRITERIA_PREFIX = "_is_not_soft_deleted_"
 _criteria_functions: dict[str, Callable[[Any], Any]] = {}
+
+
+class _SoftDeleteCriteria(LoaderCriteriaOption):
+    """``with_loader_criteria()`` for the soft-delete filter of eager loading, which SQLAlchemy applies to every
+    SELECT of the class compiled with the statement. It leaves out the SELECTs in ``disabled`` (by id): the
+    statements of subqueries in the FROM clause (subqueries, CTEs, LATERAL subqueries), or in that of a
+    subquery in it, that disable soft-delete filtering, and the SELECTs nested in them, such as a subquery that
+    counts soft-deleted rows on purpose.
+
+    Only those: a statement of the same shape without the option gets a filtered copy of such a subquery,
+    so the two have different cache keys and never share compiled SQL. A SELECT nested elsewhere (a scalar
+    subquery) is not copied, and its execution options are left out of cache keys: it stays filtered.
+    ``disabled`` holds objects of one statement and is not part of the cache key.
+    """
+
+    _traverse_internals = [
+        *LoaderCriteriaOption._traverse_internals,
+        ("disable_option_name", InternalTraversal.dp_string),
+    ]
+
+    def __init__(
+        self,
+        entity: Any,
+        where_criteria: Any,
+        *,
+        include_aliases: bool,
+        disable_option_name: str,
+        disabled: frozenset[int] = frozenset(),
+    ) -> None:
+        super().__init__(entity, where_criteria, include_aliases=include_aliases)
+        self.disable_option_name = disable_option_name
+        self.disabled = disabled
+
+    def _should_include(self, compile_state: Any) -> bool:
+        # SQLAlchemy compiles a copy of a SELECT nested in the statement, which refers to the SELECT it copies
+        # (or the first of its clones) through _is_clone_of.
+        if self.disabled:
+            statement = compile_state.select_statement
+            while statement is not None:
+                if id(statement) in self.disabled:
+                    return False
+                statement = getattr(statement, "_is_clone_of", None)
+        return bool(super()._should_include(compile_state))
+
+    def __reduce__(self) -> Any:
+        # LoaderCriteriaOption's own rebuilds a plain LoaderCriteriaOption. The SELECTs of ``disabled`` belong to
+        # the statement that loaded the instance.
+        entity = self.entity.class_ if self.entity else self.root_entity
+        return (
+            _unpickle_soft_delete_criteria,
+            (entity, self._where_crit_orig, self.include_aliases, self.disable_option_name),
+        )
+
+
+def _unpickle_soft_delete_criteria(
+    entity: Any, where_criteria: Any, include_aliases: bool, disable_option_name: str
+) -> _SoftDeleteCriteria:
+    return _SoftDeleteCriteria(
+        entity, where_criteria, include_aliases=include_aliases, disable_option_name=disable_option_name
+    )
 
 
 def _is_null_criteria(field_name: str) -> Callable[[Any], Any]:
