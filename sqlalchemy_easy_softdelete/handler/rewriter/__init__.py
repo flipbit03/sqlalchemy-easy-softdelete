@@ -24,6 +24,7 @@ from sqlalchemy.sql.annotation import Annotated
 from sqlalchemy.sql.elements import ColumnClause, TextClause
 from sqlalchemy.sql.lambdas import LambdaElement
 from sqlalchemy.sql.selectable import (
+    CTE,
     AliasedReturnsRows,
     Exists,
     FromClause,
@@ -56,6 +57,12 @@ parents a statement loaded on purpose with ``include_deleted`` still load."""
 _IN_LATERAL: contextvars.ContextVar[bool] = contextvars.ContextVar("in_lateral", default=False)
 """Whether the statement being rewritten is the statement of a LATERAL subquery: its references to the FROMs
 of the enclosing statement (another LATERAL subquery's columns) are correlations, not FROMs of its own."""
+
+_CTES_IN_REWRITE: contextvars.ContextVar[frozenset[int]] = contextvars.ContextVar(
+    "ctes_in_rewrite", default=frozenset()
+)
+"""The CTEs (by id) whose statement is being rewritten, with those they restate: inside a recursive CTE's
+statement, the references to the CTE itself are left as they are."""
 
 DEFAULT_REWRITE_CACHE_SIZE = 500
 """Default number of statement shapes whose rewrite is remembered (SQLAlchemy's default ``query_cache_size``)."""
@@ -397,8 +404,13 @@ class SoftDeleteQueryRewriter:
             # It depends on execution options inside the statement, which cache keys leave out.
             reusable = False
         found: dict[int, FromClause] = {}
+        in_rewrite = _CTES_IN_REWRITE.get()
         for from_obj in from_subqueries:
             plain = _plain(from_obj)
+            if in_rewrite and id(_subquery_in(plain)) in in_rewrite:
+                # A recursive CTE's reference to itself, inside its own statement: left as it is.
+                reusable = False
+                continue
             found.setdefault(id(plain), plain)
 
         subqueries: list[FromClause] = []
@@ -534,7 +546,34 @@ class SoftDeleteQueryRewriter:
         if key not in memo:
             element: Any = cast(AliasedReturnsRows, from_obj).element
             inner: Any
-            if isinstance(from_obj, Subquery):
+            if isinstance(from_obj, CTE) and from_obj._cte_alias is not None:
+                # An alias of a CTE (cte.alias()): an alias of the CTE's filtered copy, which the WITH clause
+                # renders.
+                aliased_copy = self._filtered_copy(from_obj._cte_alias, memo)
+                if aliased_copy is None:
+                    memo[key] = None
+                    return None
+                copy = from_obj._clone()
+                copy._is_clone_of = from_obj
+                copy._cte_alias = cast(CTE, aliased_copy)
+                copy.element = cast(CTE, aliased_copy).element
+                copy._reset_column_collection()
+                memo[key] = copy
+                return copy
+            if isinstance(from_obj, CTE):
+                # The statement of a recursive CTE refers to the CTE itself (the CTE it restates).
+                restated = {id(from_obj)}
+                cte: Any = from_obj
+                while cte._restates is not None:
+                    cte = cte._restates
+                    restated.add(id(cte))
+                cte_token = _CTES_IN_REWRITE.set(_CTES_IN_REWRITE.get() | restated)
+                try:
+                    inner = self._rewrite_subquery_element(element)
+                finally:
+                    _CTES_IN_REWRITE.reset(cte_token)
+                unchanged = inner is element
+            elif isinstance(from_obj, Subquery):
                 inner = self._rewrite_subquery_element(element)
                 unchanged = inner is element
             else:
@@ -1135,10 +1174,10 @@ def _plain(element: Any) -> Any:
     return element._deannotate() if isinstance(element, Annotated) else element
 
 
-def _subquery_in(selectable: Any) -> Subquery | None:
-    """The subquery ``selectable`` is, or wraps in aliases, LATERAL and parentheses, if any."""
+def _subquery_in(selectable: Any) -> Subquery | CTE | None:
+    """The subquery (or CTE) ``selectable`` is, or wraps in aliases, LATERAL and parentheses, if any."""
     while True:
-        if isinstance(selectable, Subquery):
+        if isinstance(selectable, (Subquery, CTE)):
             return selectable
         if isinstance(selectable, (Alias, Lateral, FromGrouping)):
             selectable = selectable.element
