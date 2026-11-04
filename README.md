@@ -73,7 +73,7 @@ This will generate a query with an automatic `WHERE fruit.deleted_at IS NULL` co
 ```py
 all_fruits = session.query(Fruit).execution_options(include_deleted=True).all()
 ```
-Setting `include_deleted=True` (attribute name can be customized) in the query disables soft delete for that query.
+Setting `include_deleted=True` (attribute name can be customized) in the query disables soft delete for that query. It can also be given at execution time, as in `session.execute(stmt, execution_options={"include_deleted": True})` or `session.get(Fruit, 1, execution_options={"include_deleted": True})`. It also covers the relationships the query eager loads (joined, selectin, subquery and immediate loads, whether set in options or on the relationship), but not the lazy loads that happen later.
 
 The rewrite never modifies your statement or anything inside it, so statements, subqueries and `lambda_stmt()` objects can be built once and executed many times, with or without `include_deleted`.
 
