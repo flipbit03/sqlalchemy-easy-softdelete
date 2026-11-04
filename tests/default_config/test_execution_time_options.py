@@ -7,7 +7,7 @@ from collections import defaultdict
 
 import pytest
 from sqlalchemy import select
-from sqlalchemy.orm import Session, joinedload, selectinload, subqueryload
+from sqlalchemy.orm import Session, immediateload, joinedload, selectinload, subqueryload
 
 from tests.default_config.model import SDChild, SDParent
 
@@ -58,7 +58,9 @@ def test_get_with_include_deleted_at_execution_time(seeded_session):
     assert child.deleted_at is not None
 
 
-@pytest.mark.parametrize("loader", [joinedload, selectinload, subqueryload], ids=lambda loader: loader.__name__)
+@pytest.mark.parametrize(
+    "loader", [joinedload, selectinload, subqueryload, immediateload], ids=lambda loader: loader.__name__
+)
 @pytest.mark.parametrize("given_on", ["statement", "execution"])
 def test_eager_loads_of_an_include_deleted_execution_include_deleted_children(seeded_session, loader, given_on):
     expected = _all_child_ids_by_parent(seeded_session)
