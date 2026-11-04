@@ -21,6 +21,7 @@ from sqlalchemy.orm.util import AliasedClass, AliasedInsp
 from sqlalchemy.sql import Alias, CompoundSelect, Executable, Join, Select, Subquery, TableClause, visitors
 from sqlalchemy.sql import util as sql_util
 from sqlalchemy.sql.annotation import Annotated
+from sqlalchemy.sql.dml import UpdateBase
 from sqlalchemy.sql.elements import ColumnClause, TextClause
 from sqlalchemy.sql.lambdas import LambdaElement
 from sqlalchemy.sql.selectable import (
@@ -369,7 +370,9 @@ class SoftDeleteQueryRewriter:
         """The plan for ``stmt``, a remembered one for its shape or a new one, and, for a new one, what
         the analysis of its FROM clause found.
         """
-        cache = self._plan_cache
+        # Inside a CTE's own statement, the plan depends on which CTE is being rewritten, which cache keys
+        # leave out (its references to itself are left as they are).
+        cache = self._plan_cache if not _CTES_IN_REWRITE.get() else None
         cache_key = stmt._generate_cache_key() if cache is not None else None
         # A relationship load's plan leaves out aliases of tables (see RELATIONSHIP_LOAD).
         key = (RELATIONSHIP_LOAD.get(), cache_key.key) if cache_key is not None else None
@@ -407,7 +410,7 @@ class SoftDeleteQueryRewriter:
         in_rewrite = _CTES_IN_REWRITE.get()
         for from_obj in from_subqueries:
             plain = _plain(from_obj)
-            if in_rewrite and id(_subquery_in(plain)) in in_rewrite:
+            if in_rewrite and id(_cte_root(_subquery_in(plain))) in in_rewrite:
                 # A recursive CTE's reference to itself, inside its own statement: left as it is.
                 reusable = False
                 continue
@@ -585,7 +588,13 @@ class SoftDeleteQueryRewriter:
                     if token is not None:
                         _IN_LATERAL.reset(token)
                 unchanged = inner is None
-            memo[key] = None if unchanged else _copy_selectable(from_obj, inner)
+            filtered = None if unchanged else _copy_selectable(from_obj, inner)
+            if isinstance(filtered, CTE) and filtered._restates is None:
+                # A CTE renders once, by name: where the statement still refers to the original (in a statement
+                # that includes soft-deleted rows, through an alias in a nested SELECT), SQLAlchemy renders the
+                # copy, which restates it.
+                filtered._restates = cast(CTE, from_obj)
+            memo[key] = filtered
         return memo[key]
 
     def _collect_from(
@@ -697,6 +706,10 @@ class SoftDeleteQueryRewriter:
 
         if isinstance(element, Select):
             return self.rewrite_select(element)
+
+        if isinstance(element, UpdateBase):
+            # INSERT/UPDATE/DELETE ... RETURNING in a CTE: its rows are the statement's, not a table's.
+            return element
 
         if isinstance(element, TextualSelect):
             # Raw SQL (text(...).columns(...)): there is nothing to filter, as for raw SQL in the FROM clause.
@@ -1172,6 +1185,14 @@ def _entity_over(insp: Any, selectable: FromClause) -> Any:
 def _plain(element: Any) -> Any:
     """``element`` without the ORM's annotations: the object the statement was built with."""
     return element._deannotate() if isinstance(element, Annotated) else element
+
+
+def _cte_root(selectable: Any) -> Any:
+    """The CTE an alias of a CTE (``cte.alias()``) refers to, through any number of aliases; ``selectable``
+    itself otherwise."""
+    while isinstance(selectable, CTE) and selectable._cte_alias is not None:
+        selectable = selectable._cte_alias
+    return selectable
 
 
 def _subquery_in(selectable: Any) -> Subquery | CTE | None:
