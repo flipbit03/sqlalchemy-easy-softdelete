@@ -27,6 +27,7 @@ from sqlalchemy.sql.selectable import (
     AliasedReturnsRows,
     FromClause,
     FromGrouping,
+    Lateral,
     SelectBase,
     SelectStatementGrouping,
     TextualSelect,
@@ -404,8 +405,12 @@ class SoftDeleteQueryRewriter:
             # Only the subqueries the statement names can be replaced; SQLAlchemy builds the others
             # (an alias of a relationship's secondary) while it compiles the statement.
             subqueries = [subquery for key, subquery in found.items() if key in scan.subqueries]
-            if any(id(subquery) not in scan.explicit for subquery in subqueries):
-                # Copies of subqueries the statement does not name as a FROM join its FROM list.
+            if any(id(subquery) not in scan.explicit for subquery in subqueries) or _joins_to_without_its_columns(
+                stmt, {id(subquery) for subquery in subqueries}
+            ):
+                # Copies of subqueries the statement does not name as a FROM join its FROM list. A join to a
+                # copy whose ON clause names none of its columns (a LATERAL subquery joined ON true) does not
+                # tell SQLAlchemy its left side, among the FROMs the columns of the original bring.
                 join_lefts = _implicit_join_lefts(stmt, final_froms)
                 if join_lefts:
                     reusable = False
@@ -858,6 +863,21 @@ def _implicit_join_lefts(stmt: Select[Any], final_froms: Any) -> dict[int, Any]:
     return lefts
 
 
+def _joins_to_without_its_columns(stmt: Select[Any], targets: set[int]) -> bool:
+    """Whether ``stmt`` has a join that does not give its left side, to one of ``targets`` (by id), with an ON
+    clause that names none of the target's columns."""
+    for target, onclause, from_, _flags in _joins_of(stmt):
+        if from_ is not None or onclause is None or isinstance(target, QueryableAttribute):
+            continue
+        plain_target = _plain(_ungrouped(target))
+        if id(plain_target) not in targets or isinstance(onclause, QueryableAttribute):
+            continue
+        named = (getattr(element, "table", None) for element in visitors.iterate(onclause))
+        if not any(table is not None and _plain(table) is plain_target for table in named):
+            return True
+    return False
+
+
 def _join_leaves(from_obj: Any) -> list[Any]:
     """The tables, subqueries and other FROM elements a join is made of, in order."""
     from_obj = _ungrouped(from_obj)
@@ -1057,11 +1077,11 @@ def _plain(element: Any) -> Any:
 
 
 def _subquery_in(selectable: Any) -> Subquery | None:
-    """The subquery ``selectable`` is, or wraps in aliases and parentheses, if any."""
+    """The subquery ``selectable`` is, or wraps in aliases, LATERAL and parentheses, if any."""
     while True:
         if isinstance(selectable, Subquery):
             return selectable
-        if isinstance(selectable, (Alias, FromGrouping)):
+        if isinstance(selectable, (Alias, Lateral, FromGrouping)):
             selectable = selectable.element
             continue
         return None
