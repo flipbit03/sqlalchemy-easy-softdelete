@@ -33,6 +33,12 @@ def activate_soft_delete_hook(
         if not state.is_select:
             return
 
+        # The option can also be given at execution time (Session.execute(..., execution_options=...),
+        # Session.get()), which leaves it out of the statement's own options. SQLAlchemy passes the
+        # options of an execution on to the selectin and subquery loads it runs.
+        if state.execution_options.get(disable_soft_delete_option_name):
+            return
+
         # Rewrite the statement (closure captures local `rewriter`)
         adapted = rewriter.rewrite_statement(state.statement)
 
