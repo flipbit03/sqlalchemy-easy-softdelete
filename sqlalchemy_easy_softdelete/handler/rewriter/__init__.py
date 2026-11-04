@@ -25,8 +25,11 @@ from sqlalchemy.sql.elements import ColumnClause, TextClause
 from sqlalchemy.sql.lambdas import LambdaElement
 from sqlalchemy.sql.selectable import (
     AliasedReturnsRows,
+    Exists,
     FromClause,
     FromGrouping,
+    Lateral,
+    ScalarSelect,
     SelectBase,
     SelectStatementGrouping,
     TextualSelect,
@@ -49,6 +52,10 @@ RELATIONSHIP_LOAD: contextvars.ContextVar[bool] = contextvars.ContextVar("relati
 ``ORMExecuteState.is_relationship_load``). Such a statement selects its parent rows by primary key, from an
 alias of the parent that SQLAlchemy makes: aliases of tables are not filtered there, so related rows of the
 parents a statement loaded on purpose with ``include_deleted`` still load."""
+
+_IN_LATERAL: contextvars.ContextVar[bool] = contextvars.ContextVar("in_lateral", default=False)
+"""Whether the statement being rewritten is the statement of a LATERAL subquery: its references to the FROMs
+of the enclosing statement (another LATERAL subquery's columns) are correlations, not FROMs of its own."""
 
 DEFAULT_REWRITE_CACHE_SIZE = 500
 """Default number of statement shapes whose rewrite is remembered (SQLAlchemy's default ``query_cache_size``)."""
@@ -404,8 +411,23 @@ class SoftDeleteQueryRewriter:
             # Only the subqueries the statement names can be replaced; SQLAlchemy builds the others
             # (an alias of a relationship's secondary) while it compiles the statement.
             subqueries = [subquery for key, subquery in found.items() if key in scan.subqueries]
-            if any(id(subquery) not in scan.explicit for subquery in subqueries):
-                # Copies of subqueries the statement does not name as a FROM join its FROM list.
+            correlated = [s for s in subqueries if isinstance(s, Lateral) and id(s) not in scan.explicit]
+            if correlated and _IN_LATERAL.get():
+                # Inside a LATERAL subquery's statement, another LATERAL subquery's columns refer to the enclosing
+                # statement's FROM clause, which filters it.
+                subqueries = [s for s in subqueries if not any(s is c for c in correlated)]
+                reusable = False
+            elif correlated:
+                raise NotImplementedError(
+                    "A LATERAL subquery the statement selects from without joining it is not supported: "
+                    "join it, as in .join(lateral_subquery, true())"
+                )
+            if any(id(subquery) not in scan.explicit for subquery in subqueries) or _joins_to_without_its_columns(
+                stmt, {id(subquery) for subquery in subqueries if self._may_be_copied(subquery)}
+            ):
+                # Copies of subqueries the statement does not name as a FROM join its FROM list. A first join
+                # to a copy ON true (as a LATERAL subquery is joined), or on the copy's own columns, does not
+                # tell SQLAlchemy its left side, among the FROMs the columns of the original bring.
                 join_lefts = _implicit_join_lefts(stmt, final_froms)
                 if join_lefts:
                     reusable = False
@@ -496,6 +518,15 @@ class SoftDeleteQueryRewriter:
             stmt = stmt.filter(column.is_(None))
         return stmt
 
+    def _may_be_copied(self, subquery: FromClause) -> bool:
+        """Whether a subquery of the statement gets a filtered copy, here or in a statement of the same shape:
+        it does when its statement is filtered, and may when part of it includes soft-deleted rows, which
+        cache keys leave out."""
+        inner = _subquery_in(subquery)
+        if inner is None:
+            return False
+        return self._filtered_copy(subquery, {}) is not None or not self._filtered_mappers_in(inner.element)[1]
+
     def _filtered_copy(self, from_obj: FromClause, memo: dict[int, FromClause | None]) -> FromClause | None:
         """A copy of a subquery (or of an alias of one) around its rewritten statement, or None when the
         rewrite leaves the statement as it is. ``memo`` keeps the copies made for one statement."""
@@ -507,8 +538,13 @@ class SoftDeleteQueryRewriter:
                 inner = self._rewrite_subquery_element(element)
                 unchanged = inner is element
             else:
-                # An alias of a subquery (an alias of an aliased() entity, or of a subquery's alias)
-                inner = self._filtered_copy(element, memo)
+                # An alias of a subquery (an alias of an aliased() entity, or of a subquery's alias, or LATERAL)
+                token = _IN_LATERAL.set(True) if isinstance(from_obj, Lateral) else None
+                try:
+                    inner = self._filtered_copy(element, memo)
+                finally:
+                    if token is not None:
+                        _IN_LATERAL.reset(token)
                 unchanged = inner is None
             memo[key] = None if unchanged else _copy_selectable(from_obj, inner)
         return memo[key]
@@ -858,6 +894,49 @@ def _implicit_join_lefts(stmt: Select[Any], final_froms: Any) -> dict[int, Any]:
     return lefts
 
 
+def _joins_to_without_its_columns(stmt: Select[Any], targets: set[int]) -> bool:
+    """Whether the first join of ``stmt``, with no ``select_from()``, goes to one of ``targets`` (by id) without a
+    left side of its own, with an ON clause that names no table but the target (``ON true``, ``ON target.x > 0``):
+    SQLAlchemy then chooses the left side among the FROMs of the statement's columns, which still include the
+    original of the copy. A later join attaches to the joins before it, and an ON clause naming another table
+    tells SQLAlchemy the side."""
+    if stmt._from_obj:
+        return False
+    joins = list(
+        itertools.chain(*(entities._setup_joins for entities in stmt._memoized_select_entities), stmt._setup_joins)
+    )
+    if not joins:
+        return False
+    target, onclause, from_, _flags = joins[0]
+    if (
+        from_ is not None
+        or onclause is None
+        or isinstance(target, QueryableAttribute)
+        or isinstance(onclause, QueryableAttribute)
+    ):
+        return False
+    plain_target = _plain(_ungrouped(target))
+    if id(plain_target) not in targets:
+        return False
+    return all(_plain(table) is plain_target for table in _tables_named_in(onclause))
+
+
+def _tables_named_in(clause: Any) -> list[Any]:
+    """The tables (and other FROM elements) whose columns ``clause`` names, outside the SELECTs nested in it
+    (an EXISTS names the tables of its own FROM clause, which SQLAlchemy does not join to)."""
+    tables: list[Any] = []
+    stack = [clause]
+    while stack:
+        element = stack.pop()
+        if isinstance(element, (SelectBase, ScalarSelect, Exists)):
+            continue
+        table = getattr(element, "table", None)
+        if table is not None:
+            tables.append(table)
+        stack.extend(element.get_children())
+    return tables
+
+
 def _join_leaves(from_obj: Any) -> list[Any]:
     """The tables, subqueries and other FROM elements a join is made of, in order."""
     from_obj = _ungrouped(from_obj)
@@ -1057,11 +1136,11 @@ def _plain(element: Any) -> Any:
 
 
 def _subquery_in(selectable: Any) -> Subquery | None:
-    """The subquery ``selectable`` is, or wraps in aliases and parentheses, if any."""
+    """The subquery ``selectable`` is, or wraps in aliases, LATERAL and parentheses, if any."""
     while True:
         if isinstance(selectable, Subquery):
             return selectable
-        if isinstance(selectable, (Alias, FromGrouping)):
+        if isinstance(selectable, (Alias, Lateral, FromGrouping)):
             selectable = selectable.element
             continue
         return None
