@@ -25,7 +25,7 @@ jobs:
         run: uv sync --all-groups
 
       - name: Static type checking with mypy
-        run: uv run mypy sqlalchemy_easy_softdelete
+        run: uv run mypy sqlalchemy_easy_softdelete tests/
 
       - name: Linting with pre-commit and ruff
         uses: pre-commit/action@v3.0.1

@@ -16,18 +16,18 @@ test:
 
 # Test with PostgreSQL (like CI) - requires pg to be running
 test-pg:
-	TEST_CONNECTION_STRING=postgresql://postgres:postgres@localhost:9991/test_db uv run pytest
+	TEST_CONNECTION_STRING=postgresql+psycopg2://postgres:postgres@localhost:9991/test_db uv run pytest
 
 # Full test matrix with PostgreSQL (like CI)
 # Runs all Python versions × SQLAlchemy versions against PostgreSQL
 test-all-pg: pg
 	@echo "Running full test matrix against PostgreSQL..."
-	TEST_CONNECTION_STRING=postgresql://postgres:postgres@localhost:9991/test_db uv run nox
+	TEST_CONNECTION_STRING=postgresql+psycopg2://postgres:postgres@localhost:9991/test_db uv run nox
 
 # Test specific Python version against PostgreSQL
 # Usage: make test-py version=3.12
 test-py: pg
-	TEST_CONNECTION_STRING=postgresql://postgres:postgres@localhost:9991/test_db uv run nox -p $(version)
+	TEST_CONNECTION_STRING=postgresql+psycopg2://postgres:postgres@localhost:9991/test_db uv run nox -p $(version)
 
 coverage:
 	uv run pytest --cov=$(sources) --cov-branch --cov-report=term-missing --cov-report=xml tests

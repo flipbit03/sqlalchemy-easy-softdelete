@@ -1,10 +1,10 @@
 # SQLAlchemy Easy Soft-Delete
 
-[![PyPI - Python Version](https://img.shields.io/pypi/pyversions/sqlalchemy-easy-softdelete?v=3)](https://pypi.org/project/sqlalchemy-easy-softdelete/)
-[![PyPI - Version](https://img.shields.io/pypi/v/sqlalchemy-easy-softdelete?v=3)](https://pypi.org/project/sqlalchemy-easy-softdelete/)
-[![PyPI - Types](https://img.shields.io/pypi/types/sqlalchemy-easy-softdelete?v=3)](https://pypi.org/project/sqlalchemy-easy-softdelete/)
-[![PyPI - Downloads](https://img.shields.io/pypi/dm/sqlalchemy-easy-softdelete?v=3)](https://pypi.org/project/sqlalchemy-easy-softdelete/)
-![Supported SQLAlchemy Versions](https://img.shields.io/badge/SQLAlchemy-2.0-brightgreen?v=3)
+[![PyPI - Python Version](https://img.shields.io/pypi/pyversions/sqlalchemy-easy-softdelete?v=4)](https://pypi.org/project/sqlalchemy-easy-softdelete/)
+[![PyPI - Version](https://img.shields.io/pypi/v/sqlalchemy-easy-softdelete?v=4)](https://pypi.org/project/sqlalchemy-easy-softdelete/)
+[![PyPI - Types](https://img.shields.io/pypi/types/sqlalchemy-easy-softdelete?v=4)](https://pypi.org/project/sqlalchemy-easy-softdelete/)
+[![PyPI - Downloads](https://img.shields.io/pypi/dm/sqlalchemy-easy-softdelete?v=4)](https://pypi.org/project/sqlalchemy-easy-softdelete/)
+![Supported SQLAlchemy Versions](https://img.shields.io/badge/SQLAlchemy-2.0%20%7C%202.1-brightgreen?v=4)
 
 Easily add soft-deletion to your SQLAlchemy Models and automatically filter out soft-deleted objects from your queries and relationships.
 
@@ -27,8 +27,8 @@ pip install sqlalchemy-easy-softdelete
 ```py
 from sqlalchemy_easy_softdelete.mixin import generate_soft_delete_mixin_class
 from sqlalchemy_easy_softdelete.hook import IgnoredTable
-from sqlalchemy.orm import declarative_base, Mapped
-from sqlalchemy import Column, Integer
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy import Integer
 from datetime import datetime
 
 # Create a Class that inherits from our class builder
@@ -39,7 +39,7 @@ class SoftDeleteMixin(
         ignored_tables=[IgnoredTable(table_schema="public", name="cars"),]
     )
 ):
-    # type: ignore[misc] is required because the mixin is dynamically generated
+    # The `type: ignore[misc]` above is required because the mixin is dynamically generated
 
     # Type hint for IDE autocomplete and type checker support.
     # Using Mapped[T | None] ensures type checkers understand this is a
@@ -55,11 +55,12 @@ class SoftDeleteMixin(
         super().undelete()  # type: ignore[misc]
 
 # Apply the mixin to your Models
-Base = declarative_base()
+class Base(DeclarativeBase):
+    pass
 
 class Fruit(Base, SoftDeleteMixin):
     __tablename__ = "fruit"
-    id = Column(Integer)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
 ```
 
 ### Example Usage:
