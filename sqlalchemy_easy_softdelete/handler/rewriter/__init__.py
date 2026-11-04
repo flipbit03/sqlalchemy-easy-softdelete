@@ -408,8 +408,8 @@ class SoftDeleteQueryRewriter:
             if any(id(subquery) not in scan.explicit for subquery in subqueries) or _joins_to_without_its_columns(
                 stmt, {id(subquery) for subquery in subqueries}
             ):
-                # Copies of subqueries the statement does not name as a FROM join its FROM list. A join to a
-                # copy whose ON clause names none of its columns (a LATERAL subquery joined ON true) does not
+                # Copies of subqueries the statement does not name as a FROM join its FROM list. A first join
+                # to a copy ON true (as a LATERAL subquery is joined), or on the copy's own columns, does not
                 # tell SQLAlchemy its left side, among the FROMs the columns of the original bring.
                 join_lefts = _implicit_join_lefts(stmt, final_froms)
                 if join_lefts:
@@ -864,18 +864,31 @@ def _implicit_join_lefts(stmt: Select[Any], final_froms: Any) -> dict[int, Any]:
 
 
 def _joins_to_without_its_columns(stmt: Select[Any], targets: set[int]) -> bool:
-    """Whether ``stmt`` has a join that does not give its left side, to one of ``targets`` (by id), with an ON
-    clause that names none of the target's columns."""
-    for target, onclause, from_, _flags in _joins_of(stmt):
-        if from_ is not None or onclause is None or isinstance(target, QueryableAttribute):
-            continue
-        plain_target = _plain(_ungrouped(target))
-        if id(plain_target) not in targets or isinstance(onclause, QueryableAttribute):
-            continue
-        named = (getattr(element, "table", None) for element in visitors.iterate(onclause))
-        if not any(table is not None and _plain(table) is plain_target for table in named):
-            return True
-    return False
+    """Whether the first join of ``stmt``, with no ``select_from()``, goes to one of ``targets`` (by id) without a
+    left side of its own, with an ON clause that names no table but the target (``ON true``, ``ON target.x > 0``):
+    SQLAlchemy then chooses the left side among the FROMs of the statement's columns, which still include the
+    original of the copy. A later join attaches to the joins before it, and an ON clause naming another table
+    tells SQLAlchemy the side."""
+    if stmt._from_obj:
+        return False
+    joins = list(
+        itertools.chain(*(entities._setup_joins for entities in stmt._memoized_select_entities), stmt._setup_joins)
+    )
+    if not joins:
+        return False
+    target, onclause, from_, _flags = joins[0]
+    if (
+        from_ is not None
+        or onclause is None
+        or isinstance(target, QueryableAttribute)
+        or isinstance(onclause, QueryableAttribute)
+    ):
+        return False
+    plain_target = _plain(_ungrouped(target))
+    if id(plain_target) not in targets:
+        return False
+    named = (getattr(element, "table", None) for element in visitors.iterate(onclause))
+    return all(_plain(table) is plain_target for table in named if table is not None)
 
 
 def _join_leaves(from_obj: Any) -> list[Any]:
@@ -1015,8 +1028,27 @@ def _place_copies(stmt: Select[Any], copies: dict[int, FromClause], join_lefts: 
         rewritten._memoized_select_entities = tuple(memoized)
     unplaced = tuple(copy for key, copy in copies.items() if key not in placed)
     if unplaced:
-        rewritten._from_obj = rewritten._from_obj + unplaced
+        rewritten._from_obj = rewritten._from_obj + _froms_before_laterals(stmt, unplaced) + unplaced
     return rewritten
+
+
+def _froms_before_laterals(stmt: Select[Any], unplaced: tuple[FromClause, ...]) -> tuple[Any, ...]:
+    """The FROMs of ``stmt``'s columns ahead of the first LATERAL subquery among ``unplaced`` copies, which the
+    FROM list must hold before the copy: a LATERAL subquery refers to the FROMs before it. Those of
+    ``select_from()`` already come first."""
+    laterals = {id(copy._is_clone_of) for copy in unplaced if isinstance(copy, Lateral)}
+    if not laterals:
+        return ()
+    froms: dict[int, Any] = {id(from_obj): from_obj for from_obj in stmt._from_obj}
+    before: list[Any] = []
+    for column in stmt._raw_columns:
+        for from_obj in column._from_objects:
+            if id(_plain(from_obj)) in laterals:
+                return tuple(before)
+            if id(from_obj) not in froms:
+                froms[id(from_obj)] = from_obj
+                before.append(from_obj)
+    return tuple(before)
 
 
 def _selects_from_copies(element: Any, copies: dict[int, FromClause]) -> bool:

@@ -78,3 +78,33 @@ def test_join_to_a_subquery_on_a_condition_without_its_columns(seeded_session):
     ).all()
     active_children = _active_children_by_parent(seeded_session)[1000]
     assert sorted(tuple(row) for row in rows) == sorted((p, c) for p in active_parents for c in active_children)
+
+
+def test_lateral_subquery_selected_from_without_a_join(lateral_session):
+    latest = _latest_child()
+
+    rows = lateral_session.execute(select(SDParent.id, latest.c.id)).all()
+
+    expected = sorted((parent_id, max(ids)) for parent_id, ids in _active_children_by_parent(lateral_session).items())
+    assert sorted(tuple(row) for row in rows) == expected
+
+
+def test_lateral_subquery_joined_on_its_own_columns(lateral_session):
+    counts = select(func.count().label("n")).select_from(SDChild).where(SDChild.parent_id == SDParent.id).lateral()
+
+    rows = lateral_session.execute(select(SDParent.id, counts.c.n).join(counts, counts.c.n > 0)).all()
+
+    by_parent = _active_children_by_parent(lateral_session)
+    assert sorted(tuple(row) for row in rows) == sorted((parent_id, len(ids)) for parent_id, ids in by_parent.items())
+
+
+def test_join_to_a_subquery_on_its_own_columns_only(seeded_session):
+    children = select(SDChild.id).where(SDChild.parent_id == 1000).subquery()
+
+    rows = seeded_session.execute(select(SDParent.id, children.c.id).join(children, children.c.id > 0)).all()
+
+    active_parents = seeded_session.scalars(
+        select(SDParent.id).where(SDParent.deleted_at.is_(None)).execution_options(include_deleted=True)
+    ).all()
+    active_children = _active_children_by_parent(seeded_session)[1000]
+    assert sorted(tuple(row) for row in rows) == sorted((p, c) for p in active_parents for c in active_children)
