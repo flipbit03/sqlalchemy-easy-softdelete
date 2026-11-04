@@ -1,7 +1,7 @@
 from datetime import datetime
 
-from sqlalchemy import Column, ForeignKey, Integer
-from sqlalchemy.orm import Mapped, as_declarative, relationship
+from sqlalchemy import ForeignKey, Integer
+from sqlalchemy.orm import Mapped, as_declarative, mapped_column, relationship
 
 from sqlalchemy_easy_softdelete.mixin import generate_soft_delete_mixin_class
 
@@ -10,7 +10,7 @@ from sqlalchemy_easy_softdelete.mixin import generate_soft_delete_mixin_class
 class CRCModelBase:
     """CRC = Custom Rewrite Cache"""
 
-    id = Column(Integer, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
 
 
 class CRCSoftDeleteMixin(
@@ -29,5 +29,5 @@ class CRCParent(CRCModelBase, CRCSoftDeleteMixin):
 
 class CRCChild(CRCModelBase, CRCSoftDeleteMixin):
     __tablename__ = "crcchild"
-    parent_id = Column(Integer, ForeignKey("crcparent.id"), nullable=False)
+    parent_id: Mapped[int] = mapped_column(Integer, ForeignKey("crcparent.id"), nullable=False)
     parent: Mapped["CRCParent"] = relationship("CRCParent", back_populates="children")  # type: ignore[assignment]

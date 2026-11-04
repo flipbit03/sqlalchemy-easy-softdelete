@@ -1,7 +1,7 @@
 from datetime import datetime
 
-from sqlalchemy import Column, DateTime, ForeignKey, Integer, String
-from sqlalchemy.orm import Mapped, as_declarative, relationship
+from sqlalchemy import DateTime, ForeignKey, Integer, String
+from sqlalchemy.orm import Mapped, as_declarative, mapped_column, relationship
 
 from sqlalchemy_easy_softdelete.hook import IgnoredTable
 from sqlalchemy_easy_softdelete.mixin import generate_soft_delete_mixin_class
@@ -9,7 +9,7 @@ from sqlalchemy_easy_softdelete.mixin import generate_soft_delete_mixin_class
 
 @as_declarative()
 class TestModelBase:
-    id = Column(Integer, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
 
     def __repr__(self) -> str:
         return f"<{self.__class__.__name__} id={self.id}>"
@@ -38,7 +38,7 @@ class SoftDeleteMixin(
 
 class SDSimpleTable(TestModelBase, SoftDeleteMixin):
     __tablename__ = "sdsimpletable"
-    int_field = Column(Integer)
+    int_field: Mapped[int | None] = mapped_column(Integer)
 
     def __repr__(self) -> str:
         return f"<{self.__class__.__name__} id={self.id} deleted={bool(self.deleted_at)}>"
@@ -54,7 +54,7 @@ class SDParent(TestModelBase, SoftDeleteMixin):
 
 class SDChild(TestModelBase, SoftDeleteMixin):
     __tablename__ = "sdchild"
-    parent_id = Column(Integer, ForeignKey("sdparent.id"), nullable=False)
+    parent_id: Mapped[int] = mapped_column(Integer, ForeignKey("sdparent.id"), nullable=False)
     parent: Mapped["SDParent"] = relationship("SDParent", back_populates="children")  # type: ignore[assignment]
     child_children: Mapped[list["SDChildChild"]] = relationship("SDChildChild", back_populates="child")  # type: ignore[assignment]
 
@@ -66,7 +66,7 @@ class SDChild(TestModelBase, SoftDeleteMixin):
 
 class SDChildChild(TestModelBase, SoftDeleteMixin):
     __tablename__ = "sdchildchild"
-    child_id = Column(Integer, ForeignKey("sdchild.id"), nullable=False)
+    child_id: Mapped[int] = mapped_column(Integer, ForeignKey("sdchild.id"), nullable=False)
     child: Mapped["SDChild"] = relationship("SDChild", back_populates="child_children")  # type: ignore[assignment]
 
     def __repr__(self) -> str:
@@ -77,8 +77,8 @@ class SDChildChild(TestModelBase, SoftDeleteMixin):
 
 class SDBaseRequest(TestModelBase, SoftDeleteMixin):
     __tablename__ = "sdbaserequest"
-    request_type = Column(String(50))
-    base_field = Column(Integer)
+    request_type: Mapped[str | None] = mapped_column(String(50))
+    base_field: Mapped[int | None] = mapped_column(Integer)
 
     __mapper_args__ = {
         "polymorphic_identity": "sdbaserequest",
@@ -88,8 +88,8 @@ class SDBaseRequest(TestModelBase, SoftDeleteMixin):
 
 class SDDerivedRequest(SDBaseRequest):
     __tablename__ = "sdderivedrequest"
-    id = Column(Integer, ForeignKey("sdbaserequest.id"), primary_key=True)
-    derived_field = Column(Integer)
+    id: Mapped[int] = mapped_column(Integer, ForeignKey("sdbaserequest.id"), primary_key=True)
+    derived_field: Mapped[int | None] = mapped_column(Integer)
 
     __mapper_args__ = {
         "polymorphic_identity": "sdderivedrequest",
@@ -98,8 +98,8 @@ class SDDerivedRequest(SDBaseRequest):
 
 class SDTableThatShouldNotBeSoftDeleted(TestModelBase):
     __tablename__ = "sdtablethatshouldnotbesoftdeleted"
-    id = Column(Integer, primary_key=True)
-    deleted_at = Column(DateTime(timezone=True))
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     def __repr__(self) -> str:
         return f"<{self.__class__.__name__} id={self.id}>"

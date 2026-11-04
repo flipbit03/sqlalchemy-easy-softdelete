@@ -22,7 +22,7 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "SQLAlchemy>=2.0.20,<2.1",
+    "SQLAlchemy>=2.0.20,<2.2",
 ]
 
 [project.urls]

@@ -1,7 +1,7 @@
 from datetime import datetime
 
-from sqlalchemy import Column, Integer
-from sqlalchemy.orm import Mapped, as_declarative
+from sqlalchemy import Integer
+from sqlalchemy.orm import Mapped, as_declarative, mapped_column
 
 from sqlalchemy_easy_softdelete.mixin import generate_soft_delete_mixin_class
 
@@ -10,7 +10,7 @@ from sqlalchemy_easy_softdelete.mixin import generate_soft_delete_mixin_class
 class DMModelBase:
     """DM = Disabled Methods"""
 
-    id = Column(Integer, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
 
 
 class DMSoftDeleteMixin(
@@ -24,4 +24,4 @@ class DMSoftDeleteMixin(
 
 class DMTable(DMModelBase, DMSoftDeleteMixin):
     __tablename__ = "dmtable"
-    value = Column(Integer)
+    value: Mapped[int | None] = mapped_column(Integer)

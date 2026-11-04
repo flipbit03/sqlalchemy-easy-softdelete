@@ -3,9 +3,9 @@ and a class mapped to a SELECT."""
 
 from datetime import datetime
 
-from sqlalchemy import Column, DateTime, Integer, String, select
+from sqlalchemy import DateTime, Integer, String, select
 from sqlalchemy.ext.declarative import ConcreteBase
-from sqlalchemy.orm import Mapped, as_declarative
+from sqlalchemy.orm import Mapped, as_declarative, mapped_column
 
 from sqlalchemy_easy_softdelete.mixin import generate_soft_delete_mixin_class
 
@@ -21,24 +21,24 @@ class MSSoftDeleteMixin(generate_soft_delete_mixin_class(deleted_field_name="era
 
 class MSEmployee(ConcreteBase, MSModelBase, MSSoftDeleteMixin):
     __tablename__ = "msemployee"
-    id = Column(Integer, primary_key=True)
-    name = Column(String(50))
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str | None] = mapped_column(String(50))
     __mapper_args__ = {"polymorphic_identity": "employee", "concrete": True}
 
 
 class MSManager(MSEmployee):
     __tablename__ = "msmanager"
-    id = Column(Integer, primary_key=True)
-    name = Column(String(50))
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str | None] = mapped_column(String(50))
     # A concrete subclass maps its own table, so it declares the soft-delete column itself.
-    erased_at = Column(DateTime(timezone=True))  # type: ignore[assignment]
+    erased_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     __mapper_args__ = {"polymorphic_identity": "manager", "concrete": True}
 
 
 class MSItem(MSModelBase, MSSoftDeleteMixin):
     __tablename__ = "msitem"
-    id = Column(Integer, primary_key=True)
-    name = Column(String(50))
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str | None] = mapped_column(String(50))
 
 
 item = MSItem.__table__

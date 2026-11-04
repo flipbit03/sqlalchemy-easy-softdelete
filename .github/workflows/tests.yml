@@ -41,7 +41,7 @@ jobs:
 
       - name: Run Tests
         env:
-          TEST_CONNECTION_STRING: postgresql://postgres:postgres@localhost:9991/test_db
+          TEST_CONNECTION_STRING: postgresql+psycopg2://postgres:postgres@localhost:9991/test_db
         run: uv run nox -p ${{ matrix.python-version }}
 
       - name: Stop PostgreSQL

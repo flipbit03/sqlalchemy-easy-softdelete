@@ -1,7 +1,7 @@
 from datetime import datetime
 
-from sqlalchemy import Column, Integer
-from sqlalchemy.orm import Mapped, as_declarative
+from sqlalchemy import Integer
+from sqlalchemy.orm import Mapped, as_declarative, mapped_column
 
 from sqlalchemy_easy_softdelete.mixin import generate_soft_delete_mixin_class
 
@@ -10,7 +10,7 @@ from sqlalchemy_easy_softdelete.mixin import generate_soft_delete_mixin_class
 class CFNModelBase:
     """CFN = Custom Field Name"""
 
-    id = Column(Integer, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
 
 
 class CFNSoftDeleteMixin(
@@ -23,4 +23,4 @@ class CFNSoftDeleteMixin(
 
 class CFNTable(CFNModelBase, CFNSoftDeleteMixin):
     __tablename__ = "cfntable"
-    value = Column(Integer)
+    value: Mapped[int | None] = mapped_column(Integer)
