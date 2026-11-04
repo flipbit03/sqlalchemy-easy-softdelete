@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from typing import Any, NamedTuple, cast
 
 import sqlalchemy
-from sqlalchemy import Column, Table, inspect
+from sqlalchemy import Column, Table, and_, exists, inspect
 from sqlalchemy.orm import FromStatement, Mapper, RelationshipProperty
 from sqlalchemy.orm.attributes import QueryableAttribute
 from sqlalchemy.orm.strategy_options import Load
@@ -47,8 +47,8 @@ Statement = Select | FromStatement | CompoundSelect | Executable | LambdaElement
 _SA_VERSION = tuple(int(part) for part in re.findall(r"\d+", sqlalchemy.__version__)[:3])
 SECONDARY_CRITERIA_SUPPORTED = _SA_VERSION >= (2, 0, 28)
 """Whether SQLAlchemy adapts the criteria of ``relationship.and_()`` that refer to the relationship's
-secondary table to the alias of it it joins (from 2.0.28 on): soft-deletable secondary tables are only
-filtered in relationship joins from that release on."""
+secondary to the alias of it it joins (from 2.0.28 on): soft-deletable secondary tables, and subqueries of
+them, are only filtered in relationship joins from that release on."""
 
 RELATIONSHIP_LOAD: contextvars.ContextVar[bool] = contextvars.ContextVar("relationship_load", default=False)
 """Whether the statement being rewritten loads a relationship (set by the hook from
@@ -114,11 +114,11 @@ class _SelectPlan:
     rewrites_subqueries: bool
     """Whether the FROM clause holds subqueries, which filtered copies replace in it."""
 
-    secondary_criteria: tuple[tuple[int, Column[Any]], ...]
-    """The soft-delete column of the secondary table of each join of the statement along a relationship
-    whose secondary table is soft-deletable, by the position of the join: filtered in the join's ON
-    clause with ``relationship.and_()``, since SQLAlchemy joins an alias of the secondary table that it
-    makes while compiling the statement."""
+    secondary_criteria: tuple[tuple[int, Any], ...]
+    """The soft-delete condition of the secondary of each join of the statement along a relationship whose
+    secondary is a soft-deletable table, or a subquery of soft-deletable tables (see ``_secondary_condition``),
+    by the position of the join: added to the join's ON clause with ``relationship.and_()``, since SQLAlchemy
+    joins an alias of the secondary that it makes while compiling the statement."""
 
     filters_table_aliases: bool
     """Whether the FROM clause holds aliases of soft-deletable tables that the statement names
@@ -714,23 +714,58 @@ class SoftDeleteQueryRewriter:
             elif _aliased_table(side) is not None:
                 aliases.append(side)
 
-    def _secondary_criteria(self, stmt: Select[Any]) -> tuple[tuple[int, Column[Any]], ...]:
+    def _secondary_criteria(self, stmt: Select[Any]) -> tuple[tuple[int, Any], ...]:
         """See ``_SelectPlan.secondary_criteria``."""
         if not SECONDARY_CRITERIA_SUPPORTED:
             return ()
-        criteria: list[tuple[int, Column[Any]]] = []
+        criteria: list[tuple[int, Any]] = []
         for index, (target, onclause, _from, _flags) in enumerate(_joins_of(stmt)):
             attribute = onclause if isinstance(onclause, QueryableAttribute) else target
             if not isinstance(attribute, QueryableAttribute):
                 continue
             prop = attribute.property
-            if not isinstance(prop, RelationshipProperty) or not isinstance(prop.secondary, Table):
+            if not isinstance(prop, RelationshipProperty) or prop.secondary is None:
                 continue
-            columns: list[Column[Any]] = []
-            self._collect_table(prop.secondary, columns)
-            if columns:
-                criteria.append((index, columns[0]))
+            condition = self._secondary_condition(prop.secondary)
+            if condition is not None:
+                criteria.append((index, condition))
         return tuple(criteria)
+
+    def _secondary_condition(self, secondary: Any) -> Any:
+        """The condition that leaves out the soft-deleted rows of a relationship's secondary table, or of the
+        soft-deletable tables of its secondary subquery (on the soft-delete column it passes on, or through
+        the primary key it passes on), or None."""
+        if isinstance(secondary, Table):
+            columns: list[Column[Any]] = []
+            self._collect_table(secondary, columns)
+            return columns[0].is_(None) if columns else None
+        subquery = _subquery_in(secondary)
+        if subquery is None or not isinstance(subquery.element, Select) or self._is_disabled(subquery.element):
+            return None
+        conditions = []
+        for from_obj in subquery.element.get_final_froms():
+            for table in _join_leaves(from_obj):
+                if not isinstance(table, Table):
+                    continue
+                columns = []
+                self._collect_table(table, columns)
+                if not columns:
+                    continue
+                passed_on = secondary.corresponding_column(columns[0])
+                if passed_on is not None:
+                    conditions.append(passed_on.is_(None))
+                    continue
+                keys = [(column, secondary.corresponding_column(column)) for column in table.primary_key.columns]
+                if not keys or any(proxy is None for _, proxy in keys):
+                    continue
+                # An alias of the table, which SQLAlchemy does not adapt to its alias of the secondary.
+                rows = table.alias()
+                conditions.append(
+                    exists().where(
+                        *(rows.c[column.key] == proxy for column, proxy in keys), rows.c[columns[0].key].is_(None)
+                    )
+                )
+        return and_(*conditions) if conditions else None
 
     def _alias_column(self, alias: Alias) -> Any:
         """The soft-delete column of an alias of a table, or None when the table is ignored or has none."""
@@ -931,7 +966,7 @@ def _aliased_table(from_obj: Any) -> Table | None:
     return from_obj if isinstance(from_obj, Table) else None
 
 
-def _with_secondary_criteria(stmt: Select[Any], criteria: tuple[tuple[int, Column[Any]], ...]) -> Select[Any]:
+def _with_secondary_criteria(stmt: Select[Any], criteria: tuple[tuple[int, Any], ...]) -> Select[Any]:
     """``stmt`` with the soft-delete condition of each secondary table in ``criteria`` added to its join along
     the relationship (``relationship.and_()``). Joins are numbered as ``_joins_of()`` lists them: the
     statement's own, then those ``with_only_columns()`` set aside."""
@@ -940,12 +975,12 @@ def _with_secondary_criteria(stmt: Select[Any], criteria: tuple[tuple[int, Colum
     def add(joins: tuple[Any, ...], offset: int) -> tuple[Any, ...]:
         rewritten = []
         for position, (target, onclause, from_, flags) in enumerate(joins, start=offset):
-            column = conditions.get(position)
-            if column is not None:
+            condition = conditions.get(position)
+            if condition is not None:
                 if isinstance(onclause, QueryableAttribute):
-                    onclause = onclause.and_(column.is_(None))
+                    onclause = onclause.and_(condition)
                 else:
-                    target = cast(QueryableAttribute[Any], target).and_(column.is_(None))
+                    target = cast(QueryableAttribute[Any], target).and_(condition)
             rewritten.append((target, onclause, from_, flags))
         return tuple(rewritten)
 
