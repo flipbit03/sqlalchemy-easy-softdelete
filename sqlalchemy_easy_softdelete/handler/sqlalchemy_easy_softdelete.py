@@ -3,7 +3,7 @@
 from typing import cast
 
 from sqlalchemy.event import listens_for
-from sqlalchemy.orm import ORMExecuteState, Session
+from sqlalchemy.orm import FromStatement, ORMExecuteState, Session
 from sqlalchemy.sql import Executable
 
 from sqlalchemy_easy_softdelete.handler.rewriter import DEFAULT_REWRITE_CACHE_SIZE, SoftDeleteQueryRewriter
@@ -30,7 +30,9 @@ def activate_soft_delete_hook(
     # Enable Soft Delete on all Relationship Loads which implement SoftDeleteMixin
     @listens_for(Session, identifier="do_orm_execute")
     def soft_delete_execute(state: ORMExecuteState):
-        if not state.is_select:
+        # Before SQLAlchemy 2.0.30, is_select is False for select(...).from_statement(select(...)).
+        # rewrite_statement() leaves a from_statement() of anything but a SELECT as it is.
+        if not state.is_select and not isinstance(state.statement, FromStatement):
             return
 
         # The option can also be given at execution time (Session.execute(..., execution_options=...),
