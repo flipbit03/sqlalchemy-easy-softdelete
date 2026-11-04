@@ -116,7 +116,7 @@ class _SelectPlan:
 
     secondary_criteria: tuple[tuple[int, Any], ...]
     """The soft-delete condition of the secondary of each join of the statement along a relationship whose
-    secondary is a soft-deletable table, or a subquery of soft-deletable tables (see ``_secondary_condition``),
+    secondary is a soft-deletable table, or a subquery of soft-deletable tables (see ``_soft_delete_condition``),
     by the position of the join: added to the join's ON clause with ``relationship.and_()``, since SQLAlchemy
     joins an alias of the secondary that it makes while compiling the statement."""
 
@@ -237,6 +237,7 @@ class SoftDeleteQueryRewriter:
         self._is_not_deleted = _is_null_criteria(deleted_field_name)
         self._lambda_cache_token = _LambdaRewriteToken(deleted_field_name)
         self._plan_cache = _PlanCache(rewrite_cache_size) if rewrite_cache_size else None
+        self._mapped_subquery_conditions: dict[type, Any] = {}
 
     def rewrite_cache_info(self) -> RewriteCacheInfo:
         """Hits, misses and size of the rewrite cache, to help choose ``rewrite_cache_size``."""
@@ -367,18 +368,28 @@ class SoftDeleteQueryRewriter:
         if not criteria:
             return stmt
         disabled = self._disabled_from_selects(stmt)
-        return stmt.options(
-            *(
+        options = []
+        for entity, include_aliases in criteria.items():
+            if hasattr(entity, self.deleted_field_name):
+                where, configuration = self._is_not_deleted, None
+            else:
+                where, configuration = self._mapped_subquery_condition(entity), self._configuration()
+            options.append(
                 _SoftDeleteCriteria(
                     entity,
-                    self._is_not_deleted,
+                    where,
                     include_aliases=include_aliases,
                     disable_option_name=self.disable_soft_delete_option_name,
                     disabled=disabled,
+                    configuration=configuration,
                 )
-                for entity, include_aliases in criteria.items()
             )
-        )
+        return stmt.options(*options)
+
+    def _configuration(self) -> tuple[str, str, tuple[tuple[str, str | None], ...]]:
+        """What a rewriter of the same configuration is made from: see ``_SoftDeleteCriteria.__reduce__``."""
+        ignored = tuple((table.name, table.table_schema) for table in self.ignored_tables)
+        return (self.deleted_field_name, self.disable_soft_delete_option_name, ignored)
 
     def _disabled_from_selects(self, stmt: Any) -> frozenset[int]:
         """The ids of the SELECTs the eager loading criteria leave out (see ``_SoftDeleteCriteria``): those of
@@ -726,15 +737,15 @@ class SoftDeleteQueryRewriter:
             prop = attribute.property
             if not isinstance(prop, RelationshipProperty) or prop.secondary is None:
                 continue
-            condition = self._secondary_condition(prop.secondary)
+            condition = self._soft_delete_condition(prop.secondary)
             if condition is not None:
                 criteria.append((index, condition))
         return tuple(criteria)
 
-    def _secondary_condition(self, secondary: Any) -> Any:
-        """The condition that leaves out the soft-deleted rows of a relationship's secondary table, or of the
-        soft-deletable tables of its secondary subquery (on the soft-delete column it passes on, or through
-        the primary key it passes on), or None."""
+    def _soft_delete_condition(self, secondary: Any) -> Any:
+        """The condition that leaves out the soft-deleted rows of a table, or of the soft-deletable tables of a
+        subquery (on the soft-delete column it passes on, or through the primary key it passes on), or None:
+        for a relationship's secondary, or a class mapped to a subquery."""
         if isinstance(secondary, Table):
             columns: list[Column[Any]] = []
             self._collect_table(secondary, columns)
@@ -839,6 +850,9 @@ class SoftDeleteQueryRewriter:
         (``load_only``, ``defer``) name their entity too; their criteria repeat a filter the statement
         already has, which changes nothing.
 
+        A class mapped to a SELECT that leaves out the soft-delete column is filtered through its primary key
+        (see ``_mapped_subquery_condition``), except where an option starts from it.
+
         An ``aliased()`` entity over a subquery whose statement includes soft-deleted rows is left out:
         eager loading into it loads its rows as they are. That depends on the execution options of the
         statement inside the subquery, which cache keys leave out.
@@ -869,7 +883,12 @@ class SoftDeleteQueryRewriter:
                             if not self._filtered_mappers_in(subquery.element)[1]:
                                 continue
                     entity_class = self._extract_entity_class_from_path_element(path_element)
-                    if entity_class is not None and self._is_soft_deletable_entity(entity_class):
+                    if entity_class is None:
+                        continue
+                    if self._is_soft_deletable_entity(entity_class) or (
+                        # The class an option starts from is in the FROM clause, as a filtered copy of its SELECT.
+                        position > 0 and self._mapped_subquery_condition(entity_class) is not None
+                    ):
                         entities.setdefault(entity_class, None)
 
         return list(entities), reusable
@@ -884,6 +903,25 @@ class SoftDeleteQueryRewriter:
             return False
 
         return True
+
+    def _mapped_subquery_condition(self, entity_class: type) -> Any:
+        """For a class mapped to a SELECT of soft-deletable tables that leaves out their soft-delete column, the
+        condition that leaves out its soft-deleted rows (see ``_soft_delete_condition``), or None.
+
+        It is the class's eager loading criteria: SQLAlchemy joins an alias of the SELECT that it makes while
+        it compiles a joined eager load, which the rewrite does not replace, and adapts the criteria to it.
+        """
+        if entity_class not in self._mapped_subquery_conditions:
+            condition = None
+            mapper: Any = inspect(entity_class, raiseerr=False)
+            if (
+                isinstance(mapper, Mapper)
+                and not hasattr(entity_class, self.deleted_field_name)
+                and _subquery_in(mapper.local_table) is not None
+            ):
+                condition = _on_attributes(self._soft_delete_condition(mapper.local_table), mapper)
+            return self._mapped_subquery_conditions.setdefault(entity_class, condition)
+        return self._mapped_subquery_conditions[entity_class]
 
     def _extract_entity_class_from_path_element(self, path_element: Any) -> type | None:
         """The entity class of a loader option's path element: a mapper, or an ``aliased()`` entity."""
@@ -969,6 +1007,31 @@ def _aliased_table(from_obj: Any) -> Table | None:
     while isinstance(from_obj, Alias):
         from_obj = from_obj.element
     return from_obj if isinstance(from_obj, Table) else None
+
+
+def _on_attributes(condition: Any, mapper: Mapper[Any]) -> Any:
+    """``condition`` on the columns of the selectable ``mapper`` maps, with each of them replaced by its mapped
+    attribute: SQLAlchemy adapts loader criteria to an alias of the class through those. None when one of the
+    columns is not mapped."""
+    if condition is None:
+        return None
+    columns = {id(column): column for column in mapper.local_table.columns}
+    unmapped = False
+
+    def replace(element: Any, **kw: Any) -> Any:
+        nonlocal unmapped
+        column = columns.get(id(element))
+        if column is None:
+            return None
+        try:
+            prop = mapper.get_property_by_column(column)
+        except sqlalchemy.orm.exc.UnmappedColumnError:
+            unmapped = True
+            return None
+        return getattr(mapper.class_, prop.key).expression
+
+    replaced = visitors.replacement_traverse(condition, {}, replace)
+    return None if unmapped else replaced
 
 
 def _with_secondary_criteria(stmt: Select[Any], criteria: tuple[tuple[int, Any], ...]) -> Select[Any]:
@@ -1405,10 +1468,12 @@ class _SoftDeleteCriteria(LoaderCriteriaOption):
         include_aliases: bool,
         disable_option_name: str,
         disabled: frozenset[int] = frozenset(),
+        configuration: tuple[str, str, tuple[tuple[str, str | None], ...]] | None = None,
     ) -> None:
         super().__init__(entity, where_criteria, include_aliases=include_aliases)
         self.disable_option_name = disable_option_name
         self.disabled = disabled
+        self.configuration = configuration
 
     def _should_include(self, compile_state: Any) -> bool:
         # SQLAlchemy compiles a copy of a SELECT nested in the statement, which refers to the SELECT it copies
@@ -1425,10 +1490,39 @@ class _SoftDeleteCriteria(LoaderCriteriaOption):
         # LoaderCriteriaOption's own rebuilds a plain LoaderCriteriaOption. The SELECTs of ``disabled`` belong to
         # the statement that loaded the instance.
         entity = self.entity.class_ if self.entity else self.root_entity
+        if self.configuration is not None:
+            # The condition of a class mapped to a SELECT is on its mapped attributes, which refer to its mapper:
+            # it is made again, by a rewriter of the same configuration.
+            return (
+                _unpickle_mapped_subquery_criteria,
+                (entity, self.include_aliases, self.configuration),
+            )
         return (
             _unpickle_soft_delete_criteria,
             (entity, self._where_crit_orig, self.include_aliases, self.disable_option_name),
         )
+
+
+_unpickling_rewriters: dict[Any, SoftDeleteQueryRewriter] = {}
+
+
+def _unpickle_mapped_subquery_criteria(
+    entity: Any, include_aliases: bool, configuration: tuple[str, str, tuple[tuple[str, str | None], ...]]
+) -> _SoftDeleteCriteria:
+    rewriter = _unpickling_rewriters.get(configuration)
+    if rewriter is None:
+        field_name, option_name, ignored = configuration
+        rewriter = SoftDeleteQueryRewriter(
+            field_name, option_name, [IgnoredTable(name, schema) for name, schema in ignored], rewrite_cache_size=0
+        )
+        rewriter = _unpickling_rewriters.setdefault(configuration, rewriter)
+    return _SoftDeleteCriteria(
+        entity,
+        rewriter._mapped_subquery_condition(entity),
+        include_aliases=include_aliases,
+        disable_option_name=configuration[1],
+        configuration=configuration,
+    )
 
 
 def _unpickle_soft_delete_criteria(
