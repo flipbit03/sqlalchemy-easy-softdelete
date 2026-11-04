@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextvars
 import itertools
 import re
 import threading
@@ -42,6 +43,12 @@ SECONDARY_CRITERIA_SUPPORTED = _SA_VERSION >= (2, 0, 28)
 """Whether SQLAlchemy adapts the criteria of ``relationship.and_()`` that refer to the relationship's
 secondary table to the alias of it it joins (from 2.0.28 on): soft-deletable secondary tables are only
 filtered in relationship joins from that release on."""
+
+RELATIONSHIP_LOAD: contextvars.ContextVar[bool] = contextvars.ContextVar("relationship_load", default=False)
+"""Whether the statement being rewritten loads a relationship (set by the hook from
+``ORMExecuteState.is_relationship_load``). Such a statement selects its parent rows by primary key, from an
+alias of the parent that SQLAlchemy makes: aliases of tables are not filtered there, so related rows of the
+parents a statement loaded on purpose with ``include_deleted`` still load."""
 
 DEFAULT_REWRITE_CACHE_SIZE = 500
 """Default number of statement shapes whose rewrite is remembered (SQLAlchemy's default ``query_cache_size``)."""
@@ -350,15 +357,17 @@ class SoftDeleteQueryRewriter:
         """
         cache = self._plan_cache
         cache_key = stmt._generate_cache_key() if cache is not None else None
-        if cache is not None and cache_key is not None:
-            plan = cache.get(cache_key.key)
+        # A relationship load's plan leaves out aliases of tables (see RELATIONSHIP_LOAD).
+        key = (RELATIONSHIP_LOAD.get(), cache_key.key) if cache_key is not None else None
+        if cache is not None and key is not None:
+            plan = cache.get(key)
             if plan is not None:
                 return plan, None
 
         plan, analysis = self._plan_select(stmt)
         if cache is not None:
-            if cache_key is not None and plan.reusable:
-                cache.put(cache_key.key, plan)
+            if key is not None and plan.reusable:
+                cache.put(key, plan)
             else:
                 cache.count_uncacheable()
         return plan, analysis
@@ -402,7 +411,7 @@ class SoftDeleteQueryRewriter:
                     reusable = False
 
         table_aliases: list[Alias] = []
-        if from_aliases and scan is not None:
+        if from_aliases and scan is not None and not RELATIONSHIP_LOAD.get():
             found_aliases = {id(_plain(alias)) for alias in from_aliases}
             if any(key not in found_aliases for key in scan.table_aliases):
                 # The scan finds an alias the FROM clause does not hold: it cannot stand in for the analysis.
@@ -459,6 +468,8 @@ class SoftDeleteQueryRewriter:
         if analysis is None and (plan.rewrites_subqueries or plan.filters_table_aliases):
             scan = _FromScan(stmt)
             aliases = [alias for alias in scan.table_aliases.values() if self._alias_column(alias) is not None]
+            if RELATIONSHIP_LOAD.get():
+                aliases = []
             analysis = _FromAnalysis(list(scan.subqueries.values()), {}, aliases)
         if plan.rewrites_subqueries and analysis is not None:
             memo: dict[int, FromClause | None] = {}
@@ -475,7 +486,7 @@ class SoftDeleteQueryRewriter:
         if plan.secondary_criteria:
             stmt = _with_secondary_criteria(stmt, plan.secondary_criteria)
 
-        if plan.filters_table_aliases and analysis is not None:
+        if plan.filters_table_aliases and analysis is not None and not RELATIONSHIP_LOAD.get():
             for alias in analysis.table_aliases:
                 column = self._alias_column(alias)
                 if column is not None:
@@ -537,7 +548,7 @@ class SoftDeleteQueryRewriter:
             # (same as raw-text identifiers above).
             return
 
-        if isinstance(from_obj, Alias) and isinstance(from_obj.element, Table):
+        if _aliased_table(from_obj) is not None:
             # An alias of a table (aliased(Model)): filtered on its own soft-delete column.
             aliases.append(from_obj)
             return
@@ -565,7 +576,7 @@ class SoftDeleteQueryRewriter:
         for side in sides:
             if isinstance(side, Table):
                 self._collect_table(side, columns)
-            elif isinstance(side, Alias) and isinstance(side.element, Table):
+            elif _aliased_table(side) is not None:
                 aliases.append(side)
 
     def _secondary_criteria(self, stmt: Select[Any]) -> tuple[tuple[int, Column[Any]], ...]:
@@ -573,7 +584,7 @@ class SoftDeleteQueryRewriter:
         if not SECONDARY_CRITERIA_SUPPORTED:
             return ()
         criteria: list[tuple[int, Column[Any]]] = []
-        for index, (target, onclause, _from, _flags) in enumerate(stmt._setup_joins):
+        for index, (target, onclause, _from, _flags) in enumerate(_joins_of(stmt)):
             attribute = onclause if isinstance(onclause, QueryableAttribute) else target
             if not isinstance(attribute, QueryableAttribute):
                 continue
@@ -588,7 +599,7 @@ class SoftDeleteQueryRewriter:
 
     def _alias_column(self, alias: Alias) -> Any:
         """The soft-delete column of an alias of a table, or None when the table is ignored or has none."""
-        table = cast(Table, alias.element)
+        table = cast(Table, _aliased_table(alias))
         columns: list[Column[Any]] = []
         self._collect_table(table, columns)
         return alias.corresponding_column(columns[0]) if columns else None
@@ -768,23 +779,50 @@ class _FromScan:
             self.subqueries.setdefault(id(from_obj), from_obj)
             if explicit:
                 self.explicit.add(id(from_obj))
-        elif isinstance(from_obj, Alias) and isinstance(from_obj.element, Table):
+        elif _aliased_table(from_obj) is not None:
             self.table_aliases.setdefault(id(from_obj), from_obj)
+
+
+def _aliased_table(from_obj: Any) -> Table | None:
+    """The table ``from_obj`` is an alias of (through any number of aliases), if it is one."""
+    if not isinstance(from_obj, Alias):
+        return None
+    while isinstance(from_obj, Alias):
+        from_obj = from_obj.element
+    return from_obj if isinstance(from_obj, Table) else None
 
 
 def _with_secondary_criteria(stmt: Select[Any], criteria: tuple[tuple[int, Column[Any]], ...]) -> Select[Any]:
     """``stmt`` with the soft-delete condition of each secondary table in ``criteria`` added to its join along
-    the relationship (``relationship.and_()``)."""
-    joins = list(stmt._setup_joins)
-    for index, column in criteria:
-        target, onclause, from_, flags = joins[index]
-        if isinstance(onclause, QueryableAttribute):
-            onclause = onclause.and_(column.is_(None))
-        else:
-            target = cast(QueryableAttribute[Any], target).and_(column.is_(None))
-        joins[index] = (target, onclause, from_, flags)
+    the relationship (``relationship.and_()``). Joins are numbered as ``_joins_of()`` lists them: the
+    statement's own, then those ``with_only_columns()`` set aside."""
+    conditions = dict(criteria)
+
+    def add(joins: tuple[Any, ...], offset: int) -> tuple[Any, ...]:
+        rewritten = []
+        for position, (target, onclause, from_, flags) in enumerate(joins, start=offset):
+            column = conditions.get(position)
+            if column is not None:
+                if isinstance(onclause, QueryableAttribute):
+                    onclause = onclause.and_(column.is_(None))
+                else:
+                    target = cast(QueryableAttribute[Any], target).and_(column.is_(None))
+            rewritten.append((target, onclause, from_, flags))
+        return tuple(rewritten)
+
     rewritten = stmt._generate()
-    rewritten._setup_joins = tuple(joins)
+    rewritten._setup_joins = add(stmt._setup_joins, 0)
+    offset = len(stmt._setup_joins)
+    if stmt._memoized_select_entities:
+        memoized = []
+        for entities in stmt._memoized_select_entities:
+            joins = add(entities._setup_joins, offset)
+            offset += len(entities._setup_joins)
+            if any(position in conditions for position in range(offset - len(joins), offset)):
+                entities = entities._clone()
+                entities._setup_joins = joins
+            memoized.append(entities)
+        rewritten._memoized_select_entities = tuple(memoized)
     return rewritten
 
 

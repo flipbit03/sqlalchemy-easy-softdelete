@@ -106,3 +106,21 @@ def test_include_deleted_on_a_statement_with_an_aliased_table(seeded_session):
     ids = seeded_session.scalars(select(child.id).execution_options(include_deleted=True)).all()
 
     assert sorted(ids) == sorted(seeded_session.scalars(select(SDChild.id).execution_options(include_deleted=True)))
+
+
+def test_alias_of_an_alias_of_a_table(seeded_session):
+    nested = SDChild.__table__.alias().alias()
+    stmt = select(SDParent.id, nested.c.id).join(nested, nested.c.parent_id == SDParent.id)
+
+    rows = seeded_session.execute(stmt).all()
+
+    assert sorted((parent_id, child_id) for parent_id, child_id in rows) == _active_parent_child_pairs(seeded_session)
+
+
+def test_aliased_entity_over_an_alias_of_an_alias_of_a_table(seeded_session):
+    seeded_session.expunge_all()
+    child = aliased(SDChild, alias=SDChild.__table__.alias().alias())
+
+    children = seeded_session.scalars(select(child)).all()
+
+    assert sorted(c.id for c in children) == _active_child_ids(seeded_session)
