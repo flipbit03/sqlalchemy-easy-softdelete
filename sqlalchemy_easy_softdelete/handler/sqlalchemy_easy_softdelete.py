@@ -8,6 +8,7 @@ from sqlalchemy.sql import Executable
 
 from sqlalchemy_easy_softdelete.handler.rewriter import (
     DEFAULT_REWRITE_CACHE_SIZE,
+    LOAD_PATH,
     RELATIONSHIP_LOAD,
     SoftDeleteQueryRewriter,
 )
@@ -51,9 +52,11 @@ def activate_soft_delete_hook(
 
         # Rewrite the statement (closure captures local `rewriter`)
         token = RELATIONSHIP_LOAD.set(state.is_relationship_load)
+        path_token = LOAD_PATH.set(state.loader_strategy_path if state.is_relationship_load else None)
         try:
             adapted = rewriter.rewrite_statement(state.statement)
         finally:
+            LOAD_PATH.reset(path_token)
             RELATIONSHIP_LOAD.reset(token)
 
         # Replace the statement

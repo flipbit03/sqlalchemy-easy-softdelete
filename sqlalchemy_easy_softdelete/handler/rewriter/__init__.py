@@ -65,6 +65,11 @@ _CTES_IN_REWRITE: contextvars.ContextVar[frozenset[int]] = contextvars.ContextVa
 """The CTEs (by id) whose statement is being rewritten, with those they restate: inside a recursive CTE's
 statement, the references to the CTE itself are left as they are."""
 
+LOAD_PATH: contextvars.ContextVar[Any] = contextvars.ContextVar("load_path", default=None)
+"""The loader path of the relationship load being rewritten (``ORMExecuteState.loader_strategy_path``, set by the
+hook). SQLAlchemy passes the parent statement's loader options on to each relationship load, those of other
+paths too: only the options on the load's own path concern its statement."""
+
 DEFAULT_REWRITE_CACHE_SIZE = 500
 """Default number of statement shapes whose rewrite is remembered (SQLAlchemy's default ``query_cache_size``)."""
 
@@ -473,16 +478,23 @@ class SoftDeleteQueryRewriter:
 
     def _keep_eager_criteria_off_unfilterable_aliases(self, stmt: Select[Any], entities: _Criteria) -> bool:
         """Turn off, in ``entities``, the eager loading criteria's reach into the ``aliased()`` forms of
-        each class that has, anywhere in ``stmt``, an ``aliased()`` entity over a subquery they must not
-        filter: one whose statement includes soft-deleted rows, or one that does not pass on the
+        each class that has, anywhere in ``stmt`` (its elements, the ``of_type()`` entities of its joins,
+        the paths of its loader options), an ``aliased()`` entity over a subquery they must not filter: one whose statement includes soft-deleted rows, or one that does not pass on the
         soft-delete column (SQLAlchemy would then filter the class's table, which the statement does not
         select from there). Return whether the result holds for every statement of the same shape: it
         does not when such entities are over subqueries, whose execution options cache keys leave out.
         """
         reusable = True
         seen: set[int] = set()
-        for element in visitors.iterate(stmt):
-            insp = _annotated_entity(element)
+        path_entities, path_dependent = _loader_path_entities(stmt)
+        if path_dependent:
+            # It depends on the path of the relationship load, which cache keys leave out.
+            reusable = False
+        for insp in itertools.chain(
+            (_annotated_entity(element) for element in visitors.iterate(stmt)),
+            _of_type_entities(stmt),
+            path_entities,
+        ):
             if not isinstance(insp, AliasedInsp) or id(insp) in seen or insp.mapper.class_ not in entities:
                 continue
             seen.add(id(insp))
@@ -912,6 +924,42 @@ def _with_secondary_criteria(stmt: Select[Any], criteria: tuple[tuple[int, Colum
             memoized.append(entities)
         rewritten._memoized_select_entities = tuple(memoized)
     return rewritten
+
+
+def _of_type_entities(stmt: Select[Any]) -> list[Any]:
+    """The ``of_type()`` entities of the relationship joins of ``stmt``, which iterating the statement does not
+    reach: ``join(Parent.children.of_type(alias))``."""
+    found: list[Any] = []
+    for target, onclause, _from, _flags in _joins_of(stmt):
+        for attribute in (target, onclause):
+            if isinstance(attribute, QueryableAttribute) and attribute._of_type is not None:
+                found.append(inspect(attribute._of_type))
+    return found
+
+
+def _loader_path_entities(stmt: Select[Any]) -> tuple[list[Any], bool]:
+    """The ``aliased()`` entities in the paths of the loader options of ``stmt``
+    (``selectinload(Parent.children.of_type(alias))``), which iterating the statement does not reach, and
+    whether the result depends on the path of the relationship load being rewritten (see ``LOAD_PATH``): in a
+    relationship load, only the paths on the load's own path count."""
+    found: list[Any] = []
+    own = list(LOAD_PATH.get() or ()) if RELATIONSHIP_LOAD.get() else None
+    path_dependent = False
+    for opt in stmt._with_options:
+        if not isinstance(opt, Load):
+            continue
+        for path in [loader.path for loader in opt.context] or [opt.path]:
+            path_elements: list[Any] = list(path) if path is not None else []  # type: ignore[call-overload]
+            aliases = [element for element in path_elements if isinstance(element, AliasedInsp)]
+            if not aliases:
+                continue
+            if own is not None:
+                path_dependent = True
+                shared = min(len(own), len(path_elements))
+                if any(a is not b for a, b in zip(own[:shared], path_elements[:shared])):
+                    continue
+            found.extend(aliases)
+    return found, path_dependent
 
 
 def _joins_of(stmt: Select[Any]) -> Any:
