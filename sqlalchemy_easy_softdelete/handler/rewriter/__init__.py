@@ -21,9 +21,11 @@ from sqlalchemy.orm.util import AliasedClass, AliasedInsp
 from sqlalchemy.sql import Alias, CompoundSelect, Executable, Join, Select, Subquery, TableClause, visitors
 from sqlalchemy.sql import util as sql_util
 from sqlalchemy.sql.annotation import Annotated
+from sqlalchemy.sql.dml import UpdateBase
 from sqlalchemy.sql.elements import ColumnClause, TextClause
 from sqlalchemy.sql.lambdas import LambdaElement
 from sqlalchemy.sql.selectable import (
+    CTE,
     AliasedReturnsRows,
     Exists,
     FromClause,
@@ -56,6 +58,12 @@ parents a statement loaded on purpose with ``include_deleted`` still load."""
 _IN_LATERAL: contextvars.ContextVar[bool] = contextvars.ContextVar("in_lateral", default=False)
 """Whether the statement being rewritten is the statement of a LATERAL subquery: its references to the FROMs
 of the enclosing statement (another LATERAL subquery's columns) are correlations, not FROMs of its own."""
+
+_CTES_IN_REWRITE: contextvars.ContextVar[frozenset[int]] = contextvars.ContextVar(
+    "ctes_in_rewrite", default=frozenset()
+)
+"""The CTEs (by id) whose statement is being rewritten, with those they restate: inside a recursive CTE's
+statement, the references to the CTE itself are left as they are."""
 
 DEFAULT_REWRITE_CACHE_SIZE = 500
 """Default number of statement shapes whose rewrite is remembered (SQLAlchemy's default ``query_cache_size``)."""
@@ -362,7 +370,9 @@ class SoftDeleteQueryRewriter:
         """The plan for ``stmt``, a remembered one for its shape or a new one, and, for a new one, what
         the analysis of its FROM clause found.
         """
-        cache = self._plan_cache
+        # Inside a CTE's own statement, the plan depends on which CTE is being rewritten, which cache keys
+        # leave out (its references to itself are left as they are).
+        cache = self._plan_cache if not _CTES_IN_REWRITE.get() else None
         cache_key = stmt._generate_cache_key() if cache is not None else None
         # A relationship load's plan leaves out aliases of tables (see RELATIONSHIP_LOAD).
         key = (RELATIONSHIP_LOAD.get(), cache_key.key) if cache_key is not None else None
@@ -397,8 +407,13 @@ class SoftDeleteQueryRewriter:
             # It depends on execution options inside the statement, which cache keys leave out.
             reusable = False
         found: dict[int, FromClause] = {}
+        in_rewrite = _CTES_IN_REWRITE.get()
         for from_obj in from_subqueries:
             plain = _plain(from_obj)
+            if in_rewrite and id(_cte_root(_subquery_in(plain))) in in_rewrite:
+                # A recursive CTE's reference to itself, inside its own statement: left as it is.
+                reusable = False
+                continue
             found.setdefault(id(plain), plain)
 
         subqueries: list[FromClause] = []
@@ -534,7 +549,34 @@ class SoftDeleteQueryRewriter:
         if key not in memo:
             element: Any = cast(AliasedReturnsRows, from_obj).element
             inner: Any
-            if isinstance(from_obj, Subquery):
+            if isinstance(from_obj, CTE) and from_obj._cte_alias is not None:
+                # An alias of a CTE (cte.alias()): an alias of the CTE's filtered copy, which the WITH clause
+                # renders.
+                aliased_copy = self._filtered_copy(from_obj._cte_alias, memo)
+                if aliased_copy is None:
+                    memo[key] = None
+                    return None
+                copy = from_obj._clone()
+                copy._is_clone_of = from_obj
+                copy._cte_alias = cast(CTE, aliased_copy)
+                copy.element = cast(CTE, aliased_copy).element
+                copy._reset_column_collection()
+                memo[key] = copy
+                return copy
+            if isinstance(from_obj, CTE):
+                # The statement of a recursive CTE refers to the CTE itself (the CTE it restates).
+                restated = {id(from_obj)}
+                cte: Any = from_obj
+                while cte._restates is not None:
+                    cte = cte._restates
+                    restated.add(id(cte))
+                cte_token = _CTES_IN_REWRITE.set(_CTES_IN_REWRITE.get() | restated)
+                try:
+                    inner = self._rewrite_subquery_element(element)
+                finally:
+                    _CTES_IN_REWRITE.reset(cte_token)
+                unchanged = inner is element
+            elif isinstance(from_obj, Subquery):
                 inner = self._rewrite_subquery_element(element)
                 unchanged = inner is element
             else:
@@ -546,7 +588,13 @@ class SoftDeleteQueryRewriter:
                     if token is not None:
                         _IN_LATERAL.reset(token)
                 unchanged = inner is None
-            memo[key] = None if unchanged else _copy_selectable(from_obj, inner)
+            filtered = None if unchanged else _copy_selectable(from_obj, inner)
+            if isinstance(filtered, CTE) and filtered._restates is None:
+                # A CTE renders once, by name: where the statement still refers to the original (in a statement
+                # that includes soft-deleted rows, through an alias in a nested SELECT), SQLAlchemy renders the
+                # copy, which restates it.
+                filtered._restates = cast(CTE, from_obj)
+            memo[key] = filtered
         return memo[key]
 
     def _collect_from(
@@ -658,6 +706,10 @@ class SoftDeleteQueryRewriter:
 
         if isinstance(element, Select):
             return self.rewrite_select(element)
+
+        if isinstance(element, UpdateBase):
+            # INSERT/UPDATE/DELETE ... RETURNING in a CTE: its rows are the statement's, not a table's.
+            return element
 
         if isinstance(element, TextualSelect):
             # Raw SQL (text(...).columns(...)): there is nothing to filter, as for raw SQL in the FROM clause.
@@ -1135,10 +1187,18 @@ def _plain(element: Any) -> Any:
     return element._deannotate() if isinstance(element, Annotated) else element
 
 
-def _subquery_in(selectable: Any) -> Subquery | None:
-    """The subquery ``selectable`` is, or wraps in aliases, LATERAL and parentheses, if any."""
+def _cte_root(selectable: Any) -> Any:
+    """The CTE an alias of a CTE (``cte.alias()``) refers to, through any number of aliases; ``selectable``
+    itself otherwise."""
+    while isinstance(selectable, CTE) and selectable._cte_alias is not None:
+        selectable = selectable._cte_alias
+    return selectable
+
+
+def _subquery_in(selectable: Any) -> Subquery | CTE | None:
+    """The subquery (or CTE) ``selectable`` is, or wraps in aliases, LATERAL and parentheses, if any."""
     while True:
-        if isinstance(selectable, Subquery):
+        if isinstance(selectable, (Subquery, CTE)):
             return selectable
         if isinstance(selectable, (Alias, Lateral, FromGrouping)):
             selectable = selectable.element
