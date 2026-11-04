@@ -300,7 +300,10 @@ class SoftDeleteQueryRewriter:
             return member if element is member.element else SelectStatementGrouping(element)
         if isinstance(member, CompoundSelect):
             return self.rewrite_compound_select(member)
-        return self.rewrite_select(cast(Select[Any], member))
+        if not isinstance(member, Select):
+            # A member of textual SQL (text(...).columns(...)): there is nothing to filter.
+            return member
+        return self.rewrite_select(member)
 
     def _is_disabled(self, stmt: Any) -> bool:
         """Whether the statement disables soft-delete filtering with the configured execution option."""
