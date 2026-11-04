@@ -53,6 +53,10 @@ RELATIONSHIP_LOAD: contextvars.ContextVar[bool] = contextvars.ContextVar("relati
 alias of the parent that SQLAlchemy makes: aliases of tables are not filtered there, so related rows of the
 parents a statement loaded on purpose with ``include_deleted`` still load."""
 
+_IN_LATERAL: contextvars.ContextVar[bool] = contextvars.ContextVar("in_lateral", default=False)
+"""Whether the statement being rewritten is the statement of a LATERAL subquery: its references to the FROMs
+of the enclosing statement (another LATERAL subquery's columns) are correlations, not FROMs of its own."""
+
 DEFAULT_REWRITE_CACHE_SIZE = 500
 """Default number of statement shapes whose rewrite is remembered (SQLAlchemy's default ``query_cache_size``)."""
 
@@ -407,8 +411,19 @@ class SoftDeleteQueryRewriter:
             # Only the subqueries the statement names can be replaced; SQLAlchemy builds the others
             # (an alias of a relationship's secondary) while it compiles the statement.
             subqueries = [subquery for key, subquery in found.items() if key in scan.subqueries]
+            correlated = [s for s in subqueries if isinstance(s, Lateral) and id(s) not in scan.explicit]
+            if correlated and _IN_LATERAL.get():
+                # Inside a LATERAL subquery's statement, another LATERAL subquery's columns refer to the enclosing
+                # statement's FROM clause, which filters it.
+                subqueries = [s for s in subqueries if not any(s is c for c in correlated)]
+                reusable = False
+            elif correlated:
+                raise NotImplementedError(
+                    "A LATERAL subquery the statement selects from without joining it is not supported: "
+                    "join it, as in .join(lateral_subquery, true())"
+                )
             if any(id(subquery) not in scan.explicit for subquery in subqueries) or _joins_to_without_its_columns(
-                stmt, {id(subquery) for subquery in subqueries}
+                stmt, {id(subquery) for subquery in subqueries if self._may_be_copied(subquery)}
             ):
                 # Copies of subqueries the statement does not name as a FROM join its FROM list. A first join
                 # to a copy ON true (as a LATERAL subquery is joined), or on the copy's own columns, does not
@@ -503,6 +518,15 @@ class SoftDeleteQueryRewriter:
             stmt = stmt.filter(column.is_(None))
         return stmt
 
+    def _may_be_copied(self, subquery: FromClause) -> bool:
+        """Whether a subquery of the statement gets a filtered copy, here or in a statement of the same shape:
+        it does when its statement is filtered, and may when part of it includes soft-deleted rows, which
+        cache keys leave out."""
+        inner = _subquery_in(subquery)
+        if inner is None:
+            return False
+        return self._filtered_copy(subquery, {}) is not None or not self._filtered_mappers_in(inner.element)[1]
+
     def _filtered_copy(self, from_obj: FromClause, memo: dict[int, FromClause | None]) -> FromClause | None:
         """A copy of a subquery (or of an alias of one) around its rewritten statement, or None when the
         rewrite leaves the statement as it is. ``memo`` keeps the copies made for one statement."""
@@ -514,8 +538,13 @@ class SoftDeleteQueryRewriter:
                 inner = self._rewrite_subquery_element(element)
                 unchanged = inner is element
             else:
-                # An alias of a subquery (an alias of an aliased() entity, or of a subquery's alias)
-                inner = self._filtered_copy(element, memo)
+                # An alias of a subquery (an alias of an aliased() entity, or of a subquery's alias, or LATERAL)
+                token = _IN_LATERAL.set(True) if isinstance(from_obj, Lateral) else None
+                try:
+                    inner = self._filtered_copy(element, memo)
+                finally:
+                    if token is not None:
+                        _IN_LATERAL.reset(token)
                 unchanged = inner is None
             memo[key] = None if unchanged else _copy_selectable(from_obj, inner)
         return memo[key]
@@ -1045,27 +1074,8 @@ def _place_copies(stmt: Select[Any], copies: dict[int, FromClause], join_lefts: 
         rewritten._memoized_select_entities = tuple(memoized)
     unplaced = tuple(copy for key, copy in copies.items() if key not in placed)
     if unplaced:
-        rewritten._from_obj = rewritten._from_obj + _froms_before_laterals(stmt, unplaced) + unplaced
+        rewritten._from_obj = rewritten._from_obj + unplaced
     return rewritten
-
-
-def _froms_before_laterals(stmt: Select[Any], unplaced: tuple[FromClause, ...]) -> tuple[Any, ...]:
-    """The FROMs of ``stmt``'s columns ahead of the first LATERAL subquery among ``unplaced`` copies, which the
-    FROM list must hold before the copy: a LATERAL subquery refers to the FROMs before it. Those of
-    ``select_from()`` already come first."""
-    laterals = {id(copy._is_clone_of) for copy in unplaced if isinstance(copy, Lateral)}
-    if not laterals:
-        return ()
-    froms: dict[int, Any] = {id(from_obj): from_obj for from_obj in stmt._from_obj}
-    before: list[Any] = []
-    for column in stmt._raw_columns:
-        for from_obj in column._from_objects:
-            if id(_plain(from_obj)) in laterals:
-                return tuple(before)
-            if id(from_obj) not in froms:
-                froms[id(from_obj)] = from_obj
-                before.append(from_obj)
-    return tuple(before)
 
 
 def _selects_from_copies(element: Any, copies: dict[int, FromClause]) -> bool:
