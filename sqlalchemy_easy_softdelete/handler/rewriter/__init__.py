@@ -25,9 +25,11 @@ from sqlalchemy.sql.elements import ColumnClause, TextClause
 from sqlalchemy.sql.lambdas import LambdaElement
 from sqlalchemy.sql.selectable import (
     AliasedReturnsRows,
+    Exists,
     FromClause,
     FromGrouping,
     Lateral,
+    ScalarSelect,
     SelectBase,
     SelectStatementGrouping,
     TextualSelect,
@@ -887,8 +889,23 @@ def _joins_to_without_its_columns(stmt: Select[Any], targets: set[int]) -> bool:
     plain_target = _plain(_ungrouped(target))
     if id(plain_target) not in targets:
         return False
-    named = (getattr(element, "table", None) for element in visitors.iterate(onclause))
-    return all(_plain(table) is plain_target for table in named if table is not None)
+    return all(_plain(table) is plain_target for table in _tables_named_in(onclause))
+
+
+def _tables_named_in(clause: Any) -> list[Any]:
+    """The tables (and other FROM elements) whose columns ``clause`` names, outside the SELECTs nested in it
+    (an EXISTS names the tables of its own FROM clause, which SQLAlchemy does not join to)."""
+    tables: list[Any] = []
+    stack = [clause]
+    while stack:
+        element = stack.pop()
+        if isinstance(element, (SelectBase, ScalarSelect, Exists)):
+            continue
+        table = getattr(element, "table", None)
+        if table is not None:
+            tables.append(table)
+        stack.extend(element.get_children())
+    return tables
 
 
 def _join_leaves(from_obj: Any) -> list[Any]:

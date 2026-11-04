@@ -3,7 +3,7 @@ whose ON clause names none of its columns (``ON true``, the usual way to join a 
 left side SQLAlchemy found for the statement."""
 
 import pytest
-from sqlalchemy import func, select, true
+from sqlalchemy import exists, func, select, true
 from sqlalchemy.orm import Session
 
 from tests.default_config.model import SDChild, SDParent
@@ -108,3 +108,21 @@ def test_join_to_a_subquery_on_its_own_columns_only(seeded_session):
     ).all()
     active_children = _active_children_by_parent(seeded_session)[1000]
     assert sorted(tuple(row) for row in rows) == sorted((p, c) for p in active_parents for c in active_children)
+
+
+def test_join_to_a_subquery_on_an_exists_of_other_tables(seeded_session):
+    """The tables of a SELECT nested in the ON clause do not tell SQLAlchemy the join's left side."""
+    children = select(SDChild.id).where(SDChild.parent_id == 1000).subquery()
+    any_child = exists(
+        select(SDChild.id).where(SDChild.parent_id == SDParent.id).execution_options(include_deleted=True)
+    )
+
+    rows = seeded_session.execute(select(SDParent.id, children.c.id).join(children, any_child)).all()
+
+    parents_with_children = seeded_session.scalars(
+        select(SDParent.id)
+        .where(SDParent.deleted_at.is_(None), SDParent.children.any())
+        .execution_options(include_deleted=True)
+    ).all()
+    active_children = _active_children_by_parent(seeded_session)[1000]
+    assert sorted(tuple(row) for row in rows) == sorted((p, c) for p in parents_with_children for c in active_children)
