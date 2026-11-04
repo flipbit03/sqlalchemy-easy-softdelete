@@ -34,11 +34,24 @@ class SSGrandChild(SSModelBase, SSSoftDeleteMixin):
     child_id: Mapped[int] = mapped_column(Integer, ForeignKey("sschild.id"))
 
 
+class SSNickname(SSModelBase, SSSoftDeleteMixin):
+    __tablename__ = "ssnickname"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    child_id: Mapped[int] = mapped_column(Integer, ForeignKey("sschild.id"))
+
+
 child = SSChild.__table__
+nickname = SSNickname.__table__
 # The children's ids and parents, without their soft-delete column.
 child_links = select(child.c.id, child.c.parent_id).subquery("child_links")
 # The same with the soft-delete column.
 child_rows = select(child.c.id, child.c.parent_id, child.c.deleted_at).subquery("child_rows")
+# The children with their nickname, if any: the nickname's primary key, without its soft-delete column.
+child_nicknames = (
+    select(child.c.id, child.c.parent_id, nickname.c.id.label("nickname_id"))
+    .select_from(child.outerjoin(nickname, nickname.c.child_id == child.c.id))
+    .subquery("child_nicknames")
+)
 # Every child, soft-deleted ones included.
 every_child = select(child.c.id, child.c.parent_id).execution_options(include_deleted=True).subquery("every_child")
 
@@ -56,4 +69,5 @@ def _grandchildren_through(secondary: Any) -> Relationship[Any]:
 
 SSParent.grandchildren = _grandchildren_through(child_links)  # type: ignore[attr-defined]
 SSParent.grandchildren_by_rows = _grandchildren_through(child_rows)  # type: ignore[attr-defined]
-SSParent.all_grandchildren = _grandchildren_through(every_child)  # type: ignore[attr-defined]
+SSParent.all_grandchildren = _grandchildren_through(every_child)
+SSParent.grandchildren_by_nickname = _grandchildren_through(child_nicknames)  # type: ignore[attr-defined]

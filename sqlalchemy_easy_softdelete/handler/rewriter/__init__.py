@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from typing import Any, NamedTuple, cast
 
 import sqlalchemy
-from sqlalchemy import Column, Table, and_, exists, inspect
+from sqlalchemy import Column, Table, and_, exists, inspect, or_
 from sqlalchemy.orm import FromStatement, Mapper, RelationshipProperty
 from sqlalchemy.orm.attributes import QueryableAttribute
 from sqlalchemy.orm.strategy_options import Load
@@ -758,11 +758,16 @@ class SoftDeleteQueryRewriter:
                 keys = [(column, secondary.corresponding_column(column)) for column in table.primary_key.columns]
                 if not keys or any(proxy is None for _, proxy in keys):
                     continue
-                # An alias of the table, which SQLAlchemy does not adapt to its alias of the secondary.
+                # An alias of the table, which SQLAlchemy does not adapt to its alias of the secondary. A NULL key
+                # (the table is outer joined, without a row) passes, as a NULL soft-delete column would.
                 rows = table.alias()
                 conditions.append(
-                    exists().where(
-                        *(rows.c[column.key] == proxy for column, proxy in keys), rows.c[columns[0].key].is_(None)
+                    or_(
+                        and_(*(proxy.is_(None) for _, proxy in keys)),
+                        exists().where(
+                            *(rows.c[column.key] == proxy for column, proxy in keys),
+                            rows.c[columns[0].key].is_(None),
+                        ),
                     )
                 )
         return and_(*conditions) if conditions else None
