@@ -541,6 +541,10 @@ class SoftDeleteQueryRewriter:
             if isinstance(child, (Select, CompoundSelect)) and self._is_disabled(child):
                 fully_filtered = False
                 continue
+            if isinstance(child, TextualSelect):
+                # Raw SQL is left as it is: its rows may include soft-deleted ones.
+                fully_filtered = False
+                continue
             mapper = getattr(child, "_annotations", {}).get("parentmapper")
             if isinstance(mapper, Mapper) and _selects_from_mapper(child, mapper):
                 found.setdefault(mapper, None)
