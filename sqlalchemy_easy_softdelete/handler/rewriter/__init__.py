@@ -14,10 +14,10 @@ from typing import Any, NamedTuple, cast
 
 import sqlalchemy
 from sqlalchemy import Column, Table, inspect
-from sqlalchemy.orm import FromStatement, Mapper, RelationshipProperty, with_loader_criteria
+from sqlalchemy.orm import FromStatement, Mapper, RelationshipProperty
 from sqlalchemy.orm.attributes import QueryableAttribute
 from sqlalchemy.orm.strategy_options import Load
-from sqlalchemy.orm.util import AliasedClass, AliasedInsp
+from sqlalchemy.orm.util import AliasedClass, AliasedInsp, LoaderCriteriaOption
 from sqlalchemy.sql import Alias, CompoundSelect, Executable, Join, Select, Subquery, TableClause, visitors
 from sqlalchemy.sql import util as sql_util
 from sqlalchemy.sql.annotation import Annotated
@@ -37,6 +37,7 @@ from sqlalchemy.sql.selectable import (
     TextualSelect,
     Values,
 )
+from sqlalchemy.sql.visitors import InternalTraversal
 
 from sqlalchemy_easy_softdelete.hook import IgnoredTable
 
@@ -361,12 +362,18 @@ class SoftDeleteQueryRewriter:
         return bool(stmt.get_execution_options().get(self.disable_soft_delete_option_name))
 
     def _with_criteria(self, stmt: Any, criteria: _Criteria) -> Any:
-        """``stmt`` with ``with_loader_criteria`` options for ``criteria``."""
+        """``stmt`` with ``with_loader_criteria`` options for ``criteria`` (``_SoftDeleteCriteria``, which leaves
+        out the SELECTs that disable soft-delete filtering)."""
         if not criteria:
             return stmt
         return stmt.options(
             *(
-                with_loader_criteria(entity, self._is_not_deleted, include_aliases=include_aliases)
+                _SoftDeleteCriteria(
+                    entity,
+                    self._is_not_deleted,
+                    include_aliases=include_aliases,
+                    disable_option_name=self.disable_soft_delete_option_name,
+                )
                 for entity, include_aliases in criteria.items()
             )
         )
@@ -1298,6 +1305,49 @@ class _LambdaRewriteToken:
 _CRITERIA_TEMPLATE = (lambda cls: cls._soft_delete_field_.is_(None)).__code__
 _CRITERIA_PREFIX = "_is_not_soft_deleted_"
 _criteria_functions: dict[str, Callable[[Any], Any]] = {}
+
+
+class _SoftDeleteCriteria(LoaderCriteriaOption):
+    """``with_loader_criteria()`` for the soft-delete filter of eager loading, which SQLAlchemy applies to every
+    SELECT of the class compiled with the statement: it leaves out the SELECTs that disable soft-delete
+    filtering (``include_deleted``), such as a subquery that counts soft-deleted rows on purpose."""
+
+    _traverse_internals = [
+        *LoaderCriteriaOption._traverse_internals,
+        ("disable_option_name", InternalTraversal.dp_string),
+    ]
+
+    def __init__(self, entity: Any, where_criteria: Any, *, include_aliases: bool, disable_option_name: str) -> None:
+        super().__init__(entity, where_criteria, include_aliases=include_aliases)
+        self.disable_option_name = disable_option_name
+
+    def _should_include(self, compile_state: Any) -> bool:
+        # SQLAlchemy compiles a copy of a SELECT nested in the statement, without its execution options: the
+        # SELECT it is a clone of has them.
+        statement = compile_state.select_statement
+        while statement is not None:
+            if self.disable_option_name in statement._execution_options:
+                if statement._execution_options[self.disable_option_name]:
+                    return False
+                break
+            statement = getattr(statement, "_is_clone_of", None)
+        return bool(super()._should_include(compile_state))
+
+    def __reduce__(self) -> Any:
+        # LoaderCriteriaOption's own rebuilds a plain LoaderCriteriaOption.
+        entity = self.entity.class_ if self.entity else self.root_entity
+        return (
+            _unpickle_soft_delete_criteria,
+            (entity, self._where_crit_orig, self.include_aliases, self.disable_option_name),
+        )
+
+
+def _unpickle_soft_delete_criteria(
+    entity: Any, where_criteria: Any, include_aliases: bool, disable_option_name: str
+) -> _SoftDeleteCriteria:
+    return _SoftDeleteCriteria(
+        entity, where_criteria, include_aliases=include_aliases, disable_option_name=disable_option_name
+    )
 
 
 def _is_null_criteria(field_name: str) -> Callable[[Any], Any]:
