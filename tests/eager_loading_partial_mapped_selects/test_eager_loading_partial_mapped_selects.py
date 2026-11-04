@@ -6,7 +6,7 @@ import pickle
 from typing import Any
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import aliased, contains_eager, joinedload, selectinload, subqueryload
 
 from tests.eager_loading_partial_mapped_selects.model import PMChildName, PMParent
@@ -114,3 +114,20 @@ def test_lazy_loads_of_pickled_eager_loaded_instances(db_session, loader):
 
     assert _collections(restored, "child_names") == ACTIVE_CHILDREN
     assert _collections(restored, "children_with_parent") == ACTIVE_CHILDREN
+
+
+@pytest.mark.parametrize("loader", [selectinload, subqueryload], ids=lambda loader: loader.__name__)
+def test_include_deleted_count_of_it_next_to_a_separate_eager_load(db_session, loader):
+    """Only joined eager loads get the class's criteria, which SQLAlchemy would also apply to every SELECT of the
+    class in the statement: selectin and subquery loads filter it as a FROM, and leave this count alone."""
+    count = (
+        select(func.count(PMChildName.id))
+        .where(PMChildName.parent_id == PMParent.id)
+        .execution_options(include_deleted=True)
+        .scalar_subquery()
+    )
+    stmt = select(PMParent, count).options(loader(PMParent.child_names)).order_by(PMParent.id)
+
+    rows = [(parent.id, n, [child.id for child in parent.child_names]) for parent, n in db_session.execute(stmt)]
+
+    assert rows == [(1, 2, [1]), (2, 1, [3])]

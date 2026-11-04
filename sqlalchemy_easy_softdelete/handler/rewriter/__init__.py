@@ -851,7 +851,7 @@ class SoftDeleteQueryRewriter:
         already has, which changes nothing.
 
         A class mapped to a SELECT that leaves out the soft-delete column is filtered through its primary key
-        (see ``_mapped_subquery_condition``), except where an option starts from it.
+        (see ``_mapped_subquery_condition``) where it is joined eager loaded.
 
         An ``aliased()`` entity over a subquery whose statement includes soft-deleted rows is left out:
         eager loading into it loads its rows as they are. That depends on the execution options of the
@@ -868,9 +868,11 @@ class SoftDeleteQueryRewriter:
 
             # An option holds a loader for each path it loads, including those its options() add:
             # entities (mappers, aliased() entities) and the relationships between them.
-            for path in [loader.path for loader in opt.context] or [opt.path]:
+            loaders = [(loader.path, getattr(loader, "strategy", None)) for loader in opt.context]
+            for path, strategy in loaders or [(opt.path, None)]:
                 # PathRegistry is iterable at runtime but not typed as such
                 path_elements: list[Any] = list(path) if path is not None else []  # type: ignore[call-overload]
+                joined = strategy is not None and ("lazy", "joined") in strategy
                 for position, path_element in enumerate(path_elements):
                     if isinstance(path_element, AliasedInsp):
                         if position == 0:
@@ -886,8 +888,11 @@ class SoftDeleteQueryRewriter:
                     if entity_class is None:
                         continue
                     if self._is_soft_deletable_entity(entity_class) or (
-                        # The class an option starts from is in the FROM clause, as a filtered copy of its SELECT.
-                        position > 0 and self._mapped_subquery_condition(entity_class) is not None
+                        # Only a joined eager load into it, which the path of its loader ends at: elsewhere it is in
+                        # a FROM clause, as a filtered copy of its SELECT.
+                        joined
+                        and position == len(path_elements) - 1
+                        and self._mapped_subquery_condition(entity_class) is not None
                     ):
                         entities.setdefault(entity_class, None)
 
