@@ -26,6 +26,7 @@ from sqlalchemy.sql.selectable import (
     FromGrouping,
     SelectBase,
     SelectStatementGrouping,
+    TextualSelect,
     Values,
 )
 
@@ -521,6 +522,10 @@ class SoftDeleteQueryRewriter:
 
         if isinstance(element, Select):
             return self.rewrite_select(element)
+
+        if isinstance(element, TextualSelect):
+            # Raw SQL (text(...).columns(...)): there is nothing to filter, as for raw SQL in the FROM clause.
+            return element
 
         raise NotImplementedError(f'Unsupported object "{(type(element))}" in subquery.element')
 
