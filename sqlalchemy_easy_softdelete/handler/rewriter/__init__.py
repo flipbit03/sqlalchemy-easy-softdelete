@@ -931,6 +931,9 @@ class SoftDeleteQueryRewriter:
         A class mapped to a SELECT that leaves out the soft-delete column is filtered through its primary key
         (see ``_mapped_subquery_condition``) where it is joined eager loaded.
 
+        The targets of relationships that are eager by their mapping (``lazy="joined"``), of the classes the statement
+        loads or its loader options reach, are filtered too: SQLAlchemy joins them with no loader option.
+
         An ``aliased()`` entity over a subquery whose statement includes soft-deleted rows is left out:
         eager loading into it loads its rows as they are. That depends on the execution options of the
         statement inside the subquery, which cache keys leave out.
@@ -940,6 +943,13 @@ class SoftDeleteQueryRewriter:
         # meaning it's stable across versions. There is no public API to read options.
         entities: dict[type, None] = {}
         reusable = True
+        # The mappers the statement loads, as entities or along its loader options: their relationships that are
+        # eager by their mapping (lazy="joined") join their targets too.
+        loaded: list[Mapper[Any]] = [
+            insp.mapper
+            for insp in (_annotated_entity(column) for column in stmt._raw_columns if isinstance(column, FromClause))
+            if isinstance(insp, (Mapper, AliasedInsp))
+        ]
         for opt in stmt._with_options:
             if not isinstance(opt, Load):
                 continue
@@ -952,6 +962,8 @@ class SoftDeleteQueryRewriter:
                 path_elements: list[Any] = list(path) if path is not None else []  # type: ignore[call-overload]
                 joined = strategy is not None and ("lazy", "joined") in strategy
                 for position, path_element in enumerate(path_elements):
+                    if isinstance(path_element, (Mapper, AliasedInsp)):
+                        loaded.append(path_element.mapper)
                     if isinstance(path_element, AliasedInsp):
                         if position == 0:
                             # An aliased() entity the option starts from is in the statement's FROM
@@ -982,6 +994,9 @@ class SoftDeleteQueryRewriter:
                         if self._is_soft_deletable_entity(base):
                             entities.setdefault(base, None)
 
+        for target in _joined_by_mapping(loaded):
+            if self._is_soft_deletable_entity(target) or self._mapped_subquery_condition(target) is not None:
+                entities.setdefault(target, None)
         return list(entities), reusable
 
     def _is_soft_deletable_entity(self, entity_class: type) -> bool:
@@ -1024,6 +1039,24 @@ class SoftDeleteQueryRewriter:
             return path_element.mapper.class_
 
         return None
+
+
+def _joined_by_mapping(mappers: list[Mapper[Any]]) -> list[type]:
+    """The target classes of the relationships of ``mappers`` that are eager by their mapping (``lazy="joined"``),
+    and of those of their targets in turn, which SQLAlchemy joins while it compiles a statement that loads them."""
+    targets: dict[type, None] = {}
+    seen: set[Mapper[Any]] = set()
+    stack = list(mappers)
+    while stack:
+        mapper = stack.pop()
+        if mapper in seen:
+            continue
+        seen.add(mapper)
+        for prop in mapper.relationships:
+            if ("lazy", "joined") in prop.strategy_key:
+                targets.setdefault(prop.mapper.class_, None)
+                stack.append(prop.mapper)
+    return list(targets)
 
 
 def _final_froms_without_loader_options(stmt: Select[Any]) -> Any:
