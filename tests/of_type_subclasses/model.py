@@ -20,6 +20,7 @@ class OTParent(OTModelBase, OTSoftDeleteMixin):
     __tablename__ = "otparent"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     children: Mapped[list["OTChild"]] = relationship(order_by="OTChild.id", viewonly=True)
+    special_children: Mapped[list["OTSpecialChild"]] = relationship(order_by="OTSpecialChild.id", viewonly=True)
     items: Mapped[list["OTItem"]] = relationship(order_by="OTItem.id", viewonly=True)
 
 
@@ -35,6 +36,10 @@ class OTChild(OTModelBase, OTSoftDeleteMixin):
 
 class OTSpecialChild(OTChild):
     __mapper_args__ = {"polymorphic_identity": "special"}
+
+
+class OTLeafChild(OTSpecialChild):
+    __mapper_args__ = {"polymorphic_identity": "leaf"}
 
 
 class OTItem(OTModelBase, OTSoftDeleteMixin):

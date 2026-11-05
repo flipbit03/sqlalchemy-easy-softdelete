@@ -552,7 +552,11 @@ class SoftDeleteQueryRewriter:
             _of_type_entities(stmt),
             path_entities,
         ):
-            if not isinstance(insp, AliasedInsp) or id(insp) in seen or insp.mapper.class_ not in entities:
+            if not isinstance(insp, AliasedInsp) or id(insp) in seen:
+                continue
+            # The criteria of a class reach the aliased() entities of its subclasses too.
+            classes = [mapper.class_ for mapper in insp.mapper.iterate_to_root() if mapper.class_ in entities]
+            if not classes:
                 continue
             seen.add(id(insp))
             subquery = _subquery_in(insp.selectable)
@@ -562,7 +566,8 @@ class SoftDeleteQueryRewriter:
             column = insp.mapper.columns.get(self.deleted_field_name)
             passed_on = column is not None and insp.selectable.corresponding_column(column) is not None
             if not passed_on or not self._filtered_mappers_in(subquery.element)[1]:
-                entities[insp.mapper.class_] = False
+                for entity_class in classes:
+                    entities[entity_class] = False
         return reusable
 
     def _apply_plan(self, stmt: Select[Any], plan: _SelectPlan, analysis: _FromAnalysis | None) -> Select[Any]:
@@ -920,8 +925,8 @@ class SoftDeleteQueryRewriter:
         (``load_only``, ``defer``) name their entity too; their criteria repeat a filter the statement
         already has, which changes nothing.
 
-        A relationship loaded as one of its target's subclasses (``of_type()``) filters the target too: SQLAlchemy
-        applies criteria by the relationship's target, which reach its subclasses.
+        A subclass in an inheritance hierarchy (a relationship loaded ``of_type()`` a subclass) filters the hierarchy's
+        base class too: SQLAlchemy applies criteria by the base class, which reach its subclasses.
 
         A class mapped to a SELECT that leaves out the soft-delete column is filtered through its primary key
         (see ``_mapped_subquery_condition``) where it is joined eager loaded.
@@ -968,13 +973,14 @@ class SoftDeleteQueryRewriter:
                         and self._mapped_subquery_condition(entity_class) is not None
                     ):
                         entities.setdefault(entity_class, None)
-                    relationship = path_elements[position - 1] if position > 0 else None
-                    if isinstance(relationship, RelationshipProperty):
-                        # SQLAlchemy applies loader criteria by the relationship's target, also for an of_type()
-                        # subclass of it, whose criteria alone it leaves out.
-                        target = relationship.mapper.class_
-                        if target is not entity_class and self._is_soft_deletable_entity(target):
-                            entities.setdefault(target, None)
+                    mapper = getattr(path_element, "mapper", None)
+                    if position > 0 and isinstance(mapper, Mapper) and mapper.inherits is not None:
+                        # SQLAlchemy applies loader criteria by the base class of an inheritance hierarchy, which
+                        # reach its subclasses, for a relationship loaded as a subclass (of_type()): it leaves out
+                        # those of the subclass.
+                        base = mapper.base_mapper.class_
+                        if self._is_soft_deletable_entity(base):
+                            entities.setdefault(base, None)
 
         return list(entities), reusable
 
