@@ -457,9 +457,9 @@ class SoftDeleteQueryRewriter:
             self._collect_from(from_obj, columns, from_subqueries, from_aliases)
 
         # Eager loading joins aliases of the loaded classes: their filter applies to aliased() forms.
-        eager_entities, reusable = self._eager_loaded_entities(stmt)
+        eager_entities, reusable, mapped_aliases = self._eager_loaded_entities(stmt)
         entities: _Criteria = dict.fromkeys(eager_entities, True)
-        if entities and not self._keep_eager_criteria_off_unfilterable_aliases(stmt, entities):
+        if entities and not self._keep_eager_criteria_off_unfilterable_aliases(stmt, entities, mapped_aliases):
             # It depends on execution options inside the statement, which cache keys leave out.
             reusable = False
         found: dict[int, FromClause] = {}
@@ -533,16 +533,23 @@ class SoftDeleteQueryRewriter:
         )
         return plan, _FromAnalysis(subqueries, join_lefts, table_aliases)
 
-    def _keep_eager_criteria_off_unfilterable_aliases(self, stmt: Select[Any], entities: _Criteria) -> bool:
+    def _keep_eager_criteria_off_unfilterable_aliases(
+        self, stmt: Select[Any], entities: _Criteria, mapped_aliases: list[AliasedInsp[Any]] | None = None
+    ) -> bool:
         """Turn off, in ``entities``, the eager loading criteria's reach into the ``aliased()`` forms of
         each class that has, anywhere in ``stmt`` (its elements, the ``of_type()`` entities of its joins,
         the paths of its loader options), an ``aliased()`` entity over a subquery they must not filter: one whose statement includes soft-deleted rows, or one that does not pass on the
         soft-delete column (SQLAlchemy would then filter the class's table, which the statement does not
         select from there). Return whether the result holds for every statement of the same shape: it
         does not when such entities are over subqueries, whose execution options cache keys leave out.
+
+        ``mapped_aliases`` are the ``aliased()`` targets of the relationships of the classes the statement
+        loads (see ``_mapping_reach``), which the criteria reach in their loads too. They belong to the mapping,
+        so they hold for every statement of the same shape.
         """
         reusable = True
         seen: set[int] = set()
+        mapping_owned = {id(insp) for insp in mapped_aliases or ()}
         path_entities, path_dependent = _loader_path_entities(stmt)
         if path_dependent:
             # It depends on the path of the relationship load, which cache keys leave out.
@@ -551,6 +558,7 @@ class SoftDeleteQueryRewriter:
             (_annotated_entity(element) for element in visitors.iterate(stmt)),
             _of_type_entities(stmt),
             path_entities,
+            mapped_aliases or (),
         ):
             if not isinstance(insp, AliasedInsp) or id(insp) in seen:
                 continue
@@ -562,13 +570,23 @@ class SoftDeleteQueryRewriter:
             subquery = _subquery_in(insp.selectable)
             if subquery is None:
                 continue
-            reusable = False
-            column = insp.mapper.columns.get(self.deleted_field_name)
-            passed_on = column is not None and insp.selectable.corresponding_column(column) is not None
-            if not passed_on or not self._filtered_mappers_in(subquery.element)[1]:
+            if id(insp) not in mapping_owned:
+                reusable = False
+            if not self._filters_alias(insp):
                 for entity_class in classes:
                     entities[entity_class] = False
         return reusable
+
+    def _filters_alias(self, insp: AliasedInsp[Any]) -> bool:
+        """Whether the eager loading criteria may filter an ``aliased()`` entity over a subquery: not when its
+        statement includes soft-deleted rows, nor when it does not pass on the soft-delete column (SQLAlchemy
+        would then filter the class's table, which it does not select from there)."""
+        subquery = _subquery_in(insp.selectable)
+        if subquery is None:
+            return True
+        column = insp.mapper.columns.get(self.deleted_field_name)
+        passed_on = column is not None and insp.selectable.corresponding_column(column) is not None
+        return passed_on and self._filtered_mappers_in(subquery.element)[1]
 
     def _apply_plan(self, stmt: Select[Any], plan: _SelectPlan, analysis: _FromAnalysis | None) -> Select[Any]:
         """Return a copy of ``stmt`` with ``plan`` applied.
@@ -916,9 +934,10 @@ class SoftDeleteQueryRewriter:
             stack.extend(child.get_children())
         return list(found), fully_filtered
 
-    def _eager_loaded_entities(self, stmt: Select[Any]) -> tuple[list[type], bool]:
+    def _eager_loaded_entities(self, stmt: Select[Any]) -> tuple[list[type], bool, list[AliasedInsp[Any]]]:
         """Soft-deletable entities named in the loader options' paths (joinedload, subqueryload, etc.),
-        and whether the list holds for every statement of the same shape.
+        whether the list holds for every statement of the same shape, and the ``aliased()`` targets of the
+        relationships of the classes the statement loads (see ``_mapping_reach``).
 
         These are filtered with ``with_loader_criteria``, so the soft-delete filter also reaches the
         JOINed aliases and the separate queries that eager loading creates. Column loader options
@@ -931,6 +950,9 @@ class SoftDeleteQueryRewriter:
         A class mapped to a SELECT that leaves out the soft-delete column is filtered through its primary key
         (see ``_mapped_subquery_condition``) where it is joined eager loaded.
 
+        The targets of relationships that are eager by their mapping (``lazy="joined"``), of the classes the statement
+        loads or its loader options reach, are filtered too: SQLAlchemy joins them with no loader option.
+
         An ``aliased()`` entity over a subquery whose statement includes soft-deleted rows is left out:
         eager loading into it loads its rows as they are. That depends on the execution options of the
         statement inside the subquery, which cache keys leave out.
@@ -940,6 +962,13 @@ class SoftDeleteQueryRewriter:
         # meaning it's stable across versions. There is no public API to read options.
         entities: dict[type, None] = {}
         reusable = True
+        # The mappers the statement loads, as entities or along its loader options: their relationships that are
+        # eager by their mapping (lazy="joined") join their targets too.
+        loaded: list[Mapper[Any]] = [
+            insp.mapper
+            for insp in (_annotated_entity(column) for column in stmt._raw_columns if isinstance(column, FromClause))
+            if isinstance(insp, (Mapper, AliasedInsp))
+        ]
         for opt in stmt._with_options:
             if not isinstance(opt, Load):
                 continue
@@ -952,6 +981,8 @@ class SoftDeleteQueryRewriter:
                 path_elements: list[Any] = list(path) if path is not None else []  # type: ignore[call-overload]
                 joined = strategy is not None and ("lazy", "joined") in strategy
                 for position, path_element in enumerate(path_elements):
+                    if isinstance(path_element, (Mapper, AliasedInsp)):
+                        loaded.append(path_element.mapper)
                     if isinstance(path_element, AliasedInsp):
                         if position == 0:
                             # An aliased() entity the option starts from is in the statement's FROM
@@ -982,7 +1013,15 @@ class SoftDeleteQueryRewriter:
                         if self._is_soft_deletable_entity(base):
                             entities.setdefault(base, None)
 
-        return list(entities), reusable
+        joined_targets, mapped_aliases = _mapping_reach(loaded)
+        for entity in joined_targets:
+            if isinstance(entity, AliasedInsp) and not self._filters_alias(entity):
+                # SQLAlchemy applies the class's criteria to its own join of such an alias.
+                continue
+            target = entity.mapper.class_
+            if self._is_soft_deletable_entity(target) or self._mapped_subquery_condition(target) is not None:
+                entities.setdefault(target, None)
+        return list(entities), reusable, mapped_aliases
 
     def _is_soft_deletable_entity(self, entity_class: type) -> bool:
         """Whether ``entity_class`` has the soft-delete column and its table is not ignored."""
@@ -1024,6 +1063,36 @@ class SoftDeleteQueryRewriter:
             return path_element.mapper.class_
 
         return None
+
+
+def _mapping_reach(mappers: list[Mapper[Any]]) -> tuple[list[Any], list[AliasedInsp[Any]]]:
+    """What the mapping of ``mappers`` (the classes a statement loads) brings into its loads, through the
+    relationships of those classes and of their subclasses (polymorphic loading), and of their targets in turn:
+
+    - the targets (mappers, or ``aliased()`` entities) of the relationships that are eager by their mapping
+      (``lazy="joined"``), which SQLAlchemy joins while it compiles the statement;
+    - the ``aliased()`` targets of any of those relationships, which the statement's criteria reach in their
+      loads, since criteria propagate to the loads of the instances a statement loads.
+    """
+    joined: dict[int, Any] = {}
+    aliases: dict[int, AliasedInsp[Any]] = {}
+    seen: set[tuple[Mapper[Any], bool]] = set()
+    eager = [(mapper, True) for mapper in mappers]
+    while eager:
+        mapper, joins = eager.pop()
+        for each in mapper.self_and_descendants:
+            if (each, joins) in seen or (each, True) in seen:
+                continue
+            seen.add((each, joins))
+            for prop in each.relationships:
+                entity = prop.entity
+                if isinstance(entity, AliasedInsp):
+                    aliases.setdefault(id(entity), entity)
+                by_join = joins and ("lazy", "joined") in prop.strategy_key
+                if by_join:
+                    joined.setdefault(id(entity), entity)
+                eager.append((prop.mapper, by_join))
+    return list(joined.values()), list(aliases.values())
 
 
 def _final_froms_without_loader_options(stmt: Select[Any]) -> Any:
