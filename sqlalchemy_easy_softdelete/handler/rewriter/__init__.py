@@ -113,6 +113,11 @@ class _SelectPlan:
     by the position of the join: added to the join's ON clause with ``relationship.and_()``, since SQLAlchemy
     joins an alias of the secondary that it makes while compiling the statement."""
 
+    joins_secondaries: bool
+    """Whether joined eager loading of the statement goes along relationships whose secondary is soft-deletable,
+    which get loader options of their own (see ``_joined_secondary_options``). The options are made for each
+    statement, whose loader paths may start at its own ``aliased()`` entities."""
+
     outer_joins: tuple[tuple[Any, Any], ...]
     """The LEFT OUTER JOINs of the statement whose right side holds soft-deletable tables or aliases of them,
     each with the ON clause SQLAlchemy finds for it when it gives none (else None). Those tables are filtered
@@ -239,6 +244,7 @@ class SoftDeleteQueryRewriter:
         self._lambda_cache_token = _LambdaRewriteToken(deleted_field_name)
         self._plan_cache = _PlanCache(rewrite_cache_size) if rewrite_cache_size else None
         self._mapped_subquery_conditions: dict[type, Any] = {}
+        self._secondary_conditions: dict[RelationshipProperty[Any], Any] = {}
 
     def rewrite_cache_info(self) -> RewriteCacheInfo:
         """Hits, misses and size of the rewrite cache, to help choose ``rewrite_cache_size``."""
@@ -527,6 +533,7 @@ class SoftDeleteQueryRewriter:
             tuple(entities.items()),
             rewrites_subqueries=bool(subqueries),
             secondary_criteria=self._secondary_criteria(stmt),
+            joins_secondaries=bool(self._joined_secondary_options(stmt)),
             outer_joins=outer_joins,
             filters_table_aliases=bool(table_aliases),
             reusable=reusable,
@@ -609,6 +616,9 @@ class SoftDeleteQueryRewriter:
                     copies[id(from_obj)] = copy
             if copies:
                 stmt = _place_copies(stmt, copies, analysis.join_lefts)
+
+        if plan.joins_secondaries:
+            stmt = stmt.options(*self._joined_secondary_options(stmt))
 
         stmt = self._with_criteria(stmt, dict(plan.criteria_entities))
 
@@ -767,8 +777,18 @@ class SoftDeleteQueryRewriter:
             if not isinstance(attribute, QueryableAttribute):
                 continue
             prop = attribute.property
-            if not isinstance(prop, RelationshipProperty) or prop.secondary is None:
+            if not isinstance(prop, RelationshipProperty):
                 continue
+            condition = self._secondary_condition(prop)
+            if condition is not None:
+                criteria.append((index, condition))
+        return tuple(criteria)
+
+    def _secondary_condition(self, prop: RelationshipProperty[Any]) -> Any:
+        """The soft-delete condition of the secondary of a relationship (see ``_soft_delete_condition``), or None."""
+        if prop.secondary is None:
+            return None
+        if prop not in self._secondary_conditions:
             # The relationship's conditions hold annotated copies of the secondary's columns.
             secondary = _plain(prop.secondary)
             linking = {
@@ -781,9 +801,66 @@ class SoftDeleteQueryRewriter:
                 and element.key in secondary.c
             }
             condition = self._soft_delete_condition(prop.secondary, linking=linking)
-            if condition is not None:
-                criteria.append((index, condition))
-        return tuple(criteria)
+            return self._secondary_conditions.setdefault(prop, condition)
+        return self._secondary_conditions[prop]
+
+    def _joined_secondary_options(self, stmt: Select[Any]) -> list[Any]:
+        """See ``_SelectPlan.joins_secondaries``: a loader option for each joined eager load of ``stmt`` along a
+        relationship whose secondary is soft-deletable, which repeats it with the secondary's condition in
+        ``relationship.and_()``. SQLAlchemy joins its own alias of the secondary for a joined eager load, which
+        the statement does not hold; it adapts those criteria to it.
+
+        The joined eager loads are those of the statement's loader options, and those of the relationships that are
+        eager by their mapping (``lazy="joined"``) of the classes the statement loads and of those joined eager
+        loading reaches. A later option for the same path takes the place of the user's.
+        """
+        options: list[Any] = []
+        seen: set[tuple[int, ...]] = set()
+
+        def add(path: list[Any], innerjoin: Any, criteria: tuple[Any, ...]) -> None:
+            prop = path[-2]
+            condition = self._secondary_condition(prop)
+            key = tuple(id(element) for element in path)
+            if condition is None or key in seen:
+                return
+            seen.add(key)
+            options.append(_joined_load_along(path, (*criteria, condition), innerjoin))
+
+        def along_mapping(path: list[Any]) -> None:
+            # The lazy="joined" relationships of the class the path ends at, and of their targets in turn.
+            stack = [path]
+            visited: set[Mapper[Any]] = set()
+            while stack:
+                current = stack.pop()
+                mapper = current[-1].mapper
+                if mapper in visited:
+                    continue
+                visited.add(mapper)
+                for prop in mapper.relationships:
+                    if ("lazy", "joined") not in prop.strategy_key:
+                        continue
+                    extended = [*current, prop, prop.entity]
+                    add(extended, prop.innerjoin, ())
+                    stack.append(extended)
+
+        for column in stmt._raw_columns:
+            insp = _annotated_entity(column) if isinstance(column, FromClause) else None
+            if isinstance(insp, (Mapper, AliasedInsp)):
+                along_mapping([insp])
+        for opt in stmt._with_options:
+            if not isinstance(opt, Load):
+                continue
+            for loader in opt.context:
+                strategy = getattr(loader, "strategy", None)
+                if strategy is None or ("lazy", "joined") not in strategy:
+                    continue
+                # PathRegistry is iterable at runtime but not typed as such
+                path: list[Any] = list(loader.path)  # type: ignore[call-overload]
+                if len(path) < 3 or not isinstance(path[-2], RelationshipProperty):
+                    continue
+                add(path, loader.local_opts.get("innerjoin"), tuple(getattr(loader, "_extra_criteria", ())))
+                along_mapping(path)
+        return options
 
     def _outer_joins(
         self, stmt: Select[Any], final_froms: Any, columns: list[Column[Any]], table_aliases: list[Alias]
@@ -1093,6 +1170,25 @@ def _mapping_reach(mappers: list[Mapper[Any]]) -> tuple[list[Any], list[AliasedI
                     joined.setdefault(id(entity), entity)
                 eager.append((prop.mapper, by_join))
     return list(joined.values()), list(aliases.values())
+
+
+def _joined_load_along(path: list[Any], criteria: tuple[Any, ...], innerjoin: Any) -> Any:
+    """A loader option that joined eager loads the last relationship of a loader path (``[entity, relationship,
+    entity, ...]``) with ``criteria``, and leaves the strategy of the relationships before it as it is."""
+
+    def entity_of(element: Any) -> Any:
+        return element.entity if isinstance(element, AliasedInsp) else element.class_
+
+    load = Load(entity_of(path[0]))
+    for index in range(1, len(path) - 1, 2):
+        prop, target = path[index], path[index + 1]
+        attribute = getattr(entity_of(path[index - 1]), prop.key)
+        if isinstance(target, AliasedInsp) or target.mapper is not prop.mapper:
+            attribute = attribute.of_type(entity_of(target))
+        if index == len(path) - 2:
+            return load.joinedload(attribute.and_(*criteria), innerjoin=innerjoin)
+        load = load.defaultload(attribute)
+    return load
 
 
 def _final_froms_without_loader_options(stmt: Select[Any]) -> Any:
