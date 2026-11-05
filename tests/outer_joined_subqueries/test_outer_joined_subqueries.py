@@ -5,7 +5,6 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import joinedload, selectinload, subqueryload
 
-from sqlalchemy_easy_softdelete.handler.rewriter import SECONDARY_CRITERIA_SUPPORTED
 from tests.outer_joined_subqueries.model import OJBadge, OJChildNickname, OJParent
 
 # Child 4's nickname is soft-deleted: it has none.
@@ -41,10 +40,6 @@ def test_joined_eager_load_of_it_never_shows_a_soft_deleted_row(db_session):
     assert [(row.id, row.nickname_id) for row in parent.child_nicknames] == [(1, None), (3, 1)]
 
 
-@pytest.mark.skipif(
-    not SECONDARY_CRITERIA_SUPPORTED,
-    reason="SQLAlchemy before 2.0.28 does not adapt relationship.and_() criteria to the secondary's alias",
-)
 @pytest.mark.parametrize("outer", [False, True], ids=["join", "outerjoin"])
 def test_join_through_it_on_a_column_of_the_outer_joined_table(db_session, outer):
     """A secondary that links rows on a column of the table it outer joins: a soft-deleted row of that table

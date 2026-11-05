@@ -4,7 +4,7 @@
 [![PyPI - Version](https://img.shields.io/pypi/v/sqlalchemy-easy-softdelete?v=4)](https://pypi.org/project/sqlalchemy-easy-softdelete/)
 [![PyPI - Types](https://img.shields.io/pypi/types/sqlalchemy-easy-softdelete?v=4)](https://pypi.org/project/sqlalchemy-easy-softdelete/)
 [![PyPI - Downloads](https://img.shields.io/pypi/dm/sqlalchemy-easy-softdelete?v=4)](https://pypi.org/project/sqlalchemy-easy-softdelete/)
-![Supported SQLAlchemy Versions](https://img.shields.io/badge/SQLAlchemy-2.0%20%7C%202.1-brightgreen?v=4)
+![Supported SQLAlchemy Versions](https://img.shields.io/badge/SQLAlchemy-2.0.28%2B%20%7C%202.1-brightgreen?v=5)
 
 Easily add soft-deletion to your SQLAlchemy Models and automatically filter out soft-deleted objects from your queries and relationships.
 
@@ -21,6 +21,8 @@ The default implementation will generate a `deleted_at` field in your models, of
 ```
 pip install sqlalchemy-easy-softdelete
 ```
+
+Requires SQLAlchemy 2.0.28 or later, including 2.1.
 
 ### How to use:
 
