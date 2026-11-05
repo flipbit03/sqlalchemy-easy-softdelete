@@ -7,17 +7,20 @@ from typing import Any
 
 import pytest
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session, aliased
+from sqlalchemy.orm import Session, aliased, with_loader_criteria
 from sqlalchemy.orm import join as orm_join
 
+from sqlalchemy_easy_softdelete.handler.rewriter import EXPLICIT_ON_CLAUSES_KEEP_LOADER_CRITERIA
 from tests.default_config.model import SDChild, SDChildChild, SDParent
 
 DELETED_AT = datetime(2000, 1, 1)
 ONLY_DELETED_CHILDREN = 2000
 NO_CHILDREN = 2001
+ONLY_DELETED_GRANDCHILDREN = 2002
 
 parent_table = SDParent.__table__
 child_table = SDChild.__table__
+grandchild_table = SDChildChild.__table__
 
 OUTER_JOINS: dict[str, Callable[[], Any]] = {
     "relationship": lambda: select(SDParent.id, SDChild.id).outerjoin(SDParent.children),
@@ -194,3 +197,64 @@ def test_full_outer_join_leaves_out_soft_deleted_rows(outer_join_session):
     assert rows
     assert not {parent_id for parent_id, _ in rows} & deleted_parents
     assert not {child_id for _, child_id in rows} & deleted_children
+
+
+def _active_rows_of_chain(session: Session, inner_first_join: bool = False) -> list[Any]:
+    """Each active parent, its active children and their active children, by outer joins of the active rows (an
+    inner join to the children with ``inner_first_join``)."""
+    parents, children, grandchildren = (
+        select(model).where(model.deleted_at.is_(None)).subquery() for model in (SDParent, SDChild, SDChildChild)
+    )
+    joined = (parents.join if inner_first_join else parents.outerjoin)(children, children.c.parent_id == parents.c.id)
+    stmt = (
+        select(parents.c.id, children.c.id, grandchildren.c.id)
+        .select_from(joined.outerjoin(grandchildren, grandchildren.c.child_id == children.c.id))
+        .execution_options(include_deleted=True)
+    )
+    return sorted(session.execute(stmt).all(), key=repr)
+
+
+@pytest.mark.parametrize("outer", [False, True], ids=["join", "outerjoin"])
+def test_join_to_a_core_join_that_outer_joins(outer_join_session, outer):
+    """The outer join nested in the joined target gets its own tables' filters; the join, those of the rest."""
+    # An active child whose only child is soft-deleted.
+    outer_join_session.add(SDParent(id=ONLY_DELETED_GRANDCHILDREN))
+    outer_join_session.flush()
+    outer_join_session.add(SDChild(id=ONLY_DELETED_GRANDCHILDREN * 100, parent_id=ONLY_DELETED_GRANDCHILDREN))
+    outer_join_session.flush()
+    outer_join_session.add(
+        SDChildChild(
+            id=ONLY_DELETED_GRANDCHILDREN * 1000, child_id=ONLY_DELETED_GRANDCHILDREN * 100, deleted_at=DELETED_AT
+        )
+    )
+    outer_join_session.flush()
+    assert (ONLY_DELETED_GRANDCHILDREN, ONLY_DELETED_GRANDCHILDREN * 100, None) in _active_rows_of_chain(
+        outer_join_session, not outer
+    )
+    target = child_table.outerjoin(grandchild_table, grandchild_table.c.child_id == child_table.c.id)
+    stmt = select(SDParent.id, child_table.c.id, grandchild_table.c.id)
+    stmt = (stmt.outerjoin if outer else stmt.join)(target, child_table.c.parent_id == parent_table.c.id)
+
+    for _ in range(2):
+        rows = sorted(outer_join_session.execute(stmt).all(), key=repr)
+
+        assert rows == _active_rows_of_chain(outer_join_session, inner_first_join=not outer)
+
+
+def test_outer_join_without_an_onclause_keeps_the_statements_loader_criteria(outer_join_session):
+    expected = _expected_rows(outer_join_session)
+    left_out = next(child_id for _, child_id in expected if child_id is not None)
+    stmt = (
+        select(SDParent.id, SDChild.id)
+        .outerjoin(SDChild)
+        .options(with_loader_criteria(SDChild, SDChild.id != left_out))
+    )
+
+    rows = sorted(outer_join_session.execute(stmt).all(), key=repr)
+
+    assert left_out not in {child_id for _, child_id in rows}
+    if EXPLICIT_ON_CLAUSES_KEEP_LOADER_CRITERIA:
+        kept = [row for row in expected if row[1] != left_out]
+        parents = {parent_id for parent_id, _ in expected}
+        orphaned = parents - {parent_id for parent_id, _ in kept}
+        assert rows == sorted(kept + [(parent_id, None) for parent_id in orphaned], key=repr)

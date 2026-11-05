@@ -33,6 +33,12 @@ class OJNickname(OJModelBase, OJSoftDeleteMixin):
     child_id: Mapped[int] = mapped_column(Integer, ForeignKey("ojchild.id"))
 
 
+class OJBadge(OJModelBase, OJSoftDeleteMixin):
+    __tablename__ = "ojbadge"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    nickname_id: Mapped[int] = mapped_column(Integer, ForeignKey("ojnickname.id"))
+
+
 child = OJChild.__table__
 nickname = OJNickname.__table__
 # The children with their nickname, if any.
@@ -53,4 +59,14 @@ OJParent.child_nicknames = relationship(  # type: ignore[attr-defined]
     primaryjoin=lambda: OJParent.id == foreign(child_nicknames.c.parent_id),
     viewonly=True,
     order_by=lambda: child_nicknames.c.id,
+)
+
+# The badges of each parent's children's nicknames, through the children with their nickname.
+OJParent.badges = relationship(  # type: ignore[attr-defined]
+    OJBadge,
+    secondary=child_nicknames,
+    primaryjoin=lambda: OJParent.id == child_nicknames.c.parent_id,
+    secondaryjoin=lambda: child_nicknames.c.nickname_id == OJBadge.nickname_id,
+    viewonly=True,
+    order_by=lambda: OJBadge.id,
 )

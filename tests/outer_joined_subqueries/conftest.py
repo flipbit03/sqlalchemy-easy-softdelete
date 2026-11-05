@@ -4,7 +4,7 @@ import pytest
 from sqlalchemy.engine import Connection
 from sqlalchemy.orm import Session, sessionmaker
 
-from tests.outer_joined_subqueries.model import OJChild, OJModelBase, OJNickname, OJParent
+from tests.outer_joined_subqueries.model import OJBadge, OJChild, OJModelBase, OJNickname, OJParent
 
 
 @pytest.fixture
@@ -23,6 +23,9 @@ def db_session(db_connection: Connection) -> Session:
     ])
     session.flush()
     session.add_all([OJNickname(id=1, child_id=3), OJNickname(id=2, child_id=4, deleted_at=deleted)])
+    session.flush()
+    # Badge 20 belongs to the soft-deleted nickname.
+    session.add_all([OJBadge(id=10, nickname_id=1), OJBadge(id=20, nickname_id=2)])
     session.flush()
     session.expunge_all()
     return session
