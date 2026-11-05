@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import Column, DateTime, ForeignKey, Integer, Table, select
+from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, Table, select
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 from sqlalchemy_easy_softdelete.mixin import generate_soft_delete_mixin_class
@@ -23,6 +23,13 @@ link = Table(
     Column("tag_id", Integer, ForeignKey("jstag.id"), primary_key=True),
     Column("deleted_at", DateTime(timezone=True)),
 )
+item_link = Table(
+    "jsitemlink",
+    JSModelBase.metadata,
+    Column("item_id", Integer, ForeignKey("jsitem.id"), primary_key=True),
+    Column("tag_id", Integer, ForeignKey("jstag.id"), primary_key=True),
+    Column("deleted_at", DateTime(timezone=True)),
+)
 # The links, through a SELECT that passes on their soft-delete column.
 link_rows = select(link.c.parent_id, link.c.tag_id, link.c.deleted_at).subquery("jslink_rows")
 
@@ -32,6 +39,7 @@ class JSOwner(JSModelBase, JSSoftDeleteMixin):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     parents: Mapped[list["JSParent"]] = relationship(order_by="JSParent.id", viewonly=True)
     eager_parents: Mapped[list["JSEagerParent"]] = relationship(order_by="JSEagerParent.id", viewonly=True)
+    items: Mapped[list["JSItem"]] = relationship(order_by="JSItem.id", viewonly=True)
 
 
 class JSParent(JSModelBase, JSSoftDeleteMixin):
@@ -67,3 +75,18 @@ class JSEagerParent(JSModelBase, JSSoftDeleteMixin):
 class JSTag(JSModelBase, JSSoftDeleteMixin):
     __tablename__ = "jstag"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+
+
+class JSItem(JSModelBase, JSSoftDeleteMixin):
+    __tablename__ = "jsitem"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    owner_id: Mapped[int] = mapped_column(Integer, ForeignKey("jsowner.id"))
+    kind: Mapped[str] = mapped_column(String(10))
+    __mapper_args__ = {"polymorphic_on": kind, "polymorphic_identity": "item"}
+
+
+class JSSpecialItem(JSItem):
+    __tablename__ = "jsspecialitem"
+    id: Mapped[int] = mapped_column(Integer, ForeignKey("jsitem.id"), primary_key=True)
+    tags: Mapped[list[JSTag]] = relationship(secondary=item_link, order_by="JSTag.id", viewonly=True)
+    __mapper_args__ = {"polymorphic_identity": "special"}

@@ -113,10 +113,10 @@ class _SelectPlan:
     by the position of the join: added to the join's ON clause with ``relationship.and_()``, since SQLAlchemy
     joins an alias of the secondary that it makes while compiling the statement."""
 
-    joins_secondaries: bool
-    """Whether joined eager loading of the statement goes along relationships whose secondary is soft-deletable,
-    which get loader options of their own (see ``_joined_secondary_options``). The options are made for each
-    statement, whose loader paths may start at its own ``aliased()`` entities."""
+    secondary_options: tuple[Any, ...] | None
+    """The loader options for the joined eager loads of the statement along relationships whose secondary is
+    soft-deletable (see ``_joined_secondary_options``), or None when they are made for each statement: when their
+    paths go through the statement's own ``aliased()`` entities."""
 
     outer_joins: tuple[tuple[Any, Any], ...]
     """The LEFT OUTER JOINs of the statement whose right side holds soft-deletable tables or aliases of them,
@@ -533,7 +533,7 @@ class SoftDeleteQueryRewriter:
             tuple(entities.items()),
             rewrites_subqueries=bool(subqueries),
             secondary_criteria=self._secondary_criteria(stmt),
-            joins_secondaries=bool(self._joined_secondary_options(stmt)),
+            secondary_options=_reusable_options(*self._joined_secondary_options(stmt)),
             outer_joins=outer_joins,
             filters_table_aliases=bool(table_aliases),
             reusable=reusable,
@@ -617,8 +617,11 @@ class SoftDeleteQueryRewriter:
             if copies:
                 stmt = _place_copies(stmt, copies, analysis.join_lefts)
 
-        if plan.joins_secondaries:
-            stmt = stmt.options(*self._joined_secondary_options(stmt))
+        secondary_options = plan.secondary_options
+        if secondary_options is None:
+            secondary_options = tuple(self._joined_secondary_options(stmt)[0])
+        if secondary_options:
+            stmt = stmt.options(*secondary_options)
 
         stmt = self._with_criteria(stmt, dict(plan.criteria_entities))
 
@@ -804,30 +807,72 @@ class SoftDeleteQueryRewriter:
             return self._secondary_conditions.setdefault(prop, condition)
         return self._secondary_conditions[prop]
 
-    def _joined_secondary_options(self, stmt: Select[Any]) -> list[Any]:
-        """See ``_SelectPlan.joins_secondaries``: a loader option for each joined eager load of ``stmt`` along a
+    def _joined_secondary_options(self, stmt: Select[Any]) -> tuple[list[Any], bool]:
+        """See ``_SelectPlan.secondary_options``: a loader option for each joined eager load of ``stmt`` along a
         relationship whose secondary is soft-deletable, which repeats it with the secondary's condition in
-        ``relationship.and_()``. SQLAlchemy joins its own alias of the secondary for a joined eager load, which
-        the statement does not hold; it adapts those criteria to it.
+        ``relationship.and_()``, and whether the options depend on the statement's own ``aliased()`` entities.
+        SQLAlchemy joins its own alias of the secondary for a joined eager load, which the statement does not
+        hold; it adapts those criteria to it.
 
-        The joined eager loads are those of the statement's loader options, and those of the relationships that are
-        eager by their mapping (``lazy="joined"``) of the classes the statement loads and of those joined eager
-        loading reaches. A later option for the same path takes the place of the user's.
+        The joined eager loads are those of the statement's ``joinedload()`` options, the last one for each path,
+        and those of the relationships that are eager by their mapping (``lazy="joined"``) of the classes the
+        statement loads and of those joined eager loading reaches, unless an option of the statement speaks for
+        their path or the statement has a wildcard option. An option for the same path, with the same arguments,
+        takes the place of the statement's.
         """
+        explicit: dict[tuple[int, ...], tuple[list[Any], Any, tuple[Any, ...]]] = {}
+        named: set[tuple[int, ...]] = set()
+        wildcard = False
+        for opt in stmt._with_options:
+            if not isinstance(opt, Load):
+                # A wildcard option (raiseload("*")): its path is a token.
+                wildcard = wildcard or any(_relationship_token(element) for element in getattr(opt, "path", ()))
+                continue
+            for loader in opt.context:
+                # PathRegistry is iterable at runtime but not typed as such
+                path: list[Any] = list(loader.path)  # type: ignore[call-overload]
+                if any(isinstance(element, str) for element in path):
+                    # A wildcard; one for columns (load_only()) leaves relationships as they are.
+                    wildcard = wildcard or any(_relationship_token(element) for element in path)
+                    continue
+                key = _path_key(path)
+                strategy = getattr(loader, "strategy", None)
+                if strategy is not None:
+                    # defaultload() names a path without choosing its strategy.
+                    named.add(key)
+                joined = strategy is not None and ("lazy", "joined") in strategy
+                # contains_eager() loads from the statement's own join, which the rewrite filters.
+                plain = set(loader.local_opts) <= {"innerjoin"}
+                if not joined or not plain or len(path) < 3 or not isinstance(path[-2], RelationshipProperty):
+                    explicit.pop(key, None)
+                    continue
+                if any(_in_polymorphic_alias(element) for element in path):
+                    explicit.pop(key, None)
+                    continue
+                explicit[key] = (
+                    path,
+                    loader.local_opts.get("innerjoin"),
+                    tuple(getattr(loader, "_extra_criteria", ())),
+                )
+
         options: list[Any] = []
-        seen: set[tuple[int, ...]] = set()
+        statement_specific = False
+        added: set[tuple[int, ...]] = set()
 
         def add(path: list[Any], innerjoin: Any, criteria: tuple[Any, ...]) -> None:
-            prop = path[-2]
-            condition = self._secondary_condition(prop)
-            key = tuple(id(element) for element in path)
-            if condition is None or key in seen:
+            nonlocal statement_specific
+            key = _path_key(path)
+            condition = self._secondary_condition(path[-2])
+            if condition is None or key in added:
                 return
-            seen.add(key)
+            added.add(key)
             options.append(_joined_load_along(path, (*criteria, condition), innerjoin))
+            statement_specific = statement_specific or any(isinstance(element, AliasedInsp) for element in path)
 
         def along_mapping(path: list[Any]) -> None:
             # The lazy="joined" relationships of the class the path ends at, and of their targets in turn.
+            if wildcard:
+                return
             stack = [path]
             visited: set[Mapper[Any]] = set()
             while stack:
@@ -840,27 +885,21 @@ class SoftDeleteQueryRewriter:
                     if ("lazy", "joined") not in prop.strategy_key:
                         continue
                     extended = [*current, prop, prop.entity]
-                    add(extended, prop.innerjoin, ())
+                    if _path_key(extended) in named:
+                        # An option of the statement speaks for it.
+                        continue
+                    add(extended, None, ())
                     stack.append(extended)
 
+        for path, innerjoin, criteria in explicit.values():
+            add(path, innerjoin, criteria)
         for column in stmt._raw_columns:
             insp = _annotated_entity(column) if isinstance(column, FromClause) else None
             if isinstance(insp, (Mapper, AliasedInsp)):
                 along_mapping([insp])
-        for opt in stmt._with_options:
-            if not isinstance(opt, Load):
-                continue
-            for loader in opt.context:
-                strategy = getattr(loader, "strategy", None)
-                if strategy is None or ("lazy", "joined") not in strategy:
-                    continue
-                # PathRegistry is iterable at runtime but not typed as such
-                path: list[Any] = list(loader.path)  # type: ignore[call-overload]
-                if len(path) < 3 or not isinstance(path[-2], RelationshipProperty):
-                    continue
-                add(path, loader.local_opts.get("innerjoin"), tuple(getattr(loader, "_extra_criteria", ())))
-                along_mapping(path)
-        return options
+        for path, _innerjoin, _criteria in explicit.values():
+            along_mapping(path)
+        return options, statement_specific
 
     def _outer_joins(
         self, stmt: Select[Any], final_froms: Any, columns: list[Column[Any]], table_aliases: list[Alias]
@@ -1170,6 +1209,28 @@ def _mapping_reach(mappers: list[Mapper[Any]]) -> tuple[list[Any], list[AliasedI
                     joined.setdefault(id(entity), entity)
                 eager.append((prop.mapper, by_join))
     return list(joined.values()), list(aliases.values())
+
+
+def _reusable_options(options: list[Any], statement_specific: bool) -> tuple[Any, ...] | None:
+    """``options`` for a plan, or None when they depend on the statement's own entities."""
+    return None if statement_specific else tuple(options)
+
+
+def _relationship_token(element: Any) -> bool:
+    """Whether a loader path element is a wildcard token for relationships (``relationship:*``)."""
+    return isinstance(element, str) and element.startswith("relationship:")
+
+
+def _path_key(path: list[Any]) -> tuple[int, ...]:
+    return tuple(id(element) for element in path)
+
+
+def _in_polymorphic_alias(element: Any) -> bool:
+    """Whether a loader path element is a ``with_polymorphic()`` entity or one of its subclass entities, which a
+    rebuilt path cannot name again."""
+    if not isinstance(element, AliasedInsp):
+        return False
+    return bool(getattr(element, "_is_with_polymorphic", False)) or element._base_alias() is not element
 
 
 def _joined_load_along(path: list[Any], criteria: tuple[Any, ...], innerjoin: Any) -> Any:

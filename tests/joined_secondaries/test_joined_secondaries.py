@@ -3,10 +3,20 @@ SQLAlchemy joins its own alias of the secondary for it, which the statement does
 eager load again with the secondary's condition in ``relationship.and_()``, which SQLAlchemy adapts to that alias."""
 
 import pytest
-from sqlalchemy import select
-from sqlalchemy.orm import aliased, joinedload, selectinload
+from sqlalchemy import exc, select
+from sqlalchemy.orm import (
+    aliased,
+    contains_eager,
+    defaultload,
+    joinedload,
+    lazyload,
+    raiseload,
+    selectinload,
+    subqueryload,
+    with_polymorphic,
+)
 
-from tests.joined_secondaries.model import JSEagerParent, JSOwner, JSParent, JSTag
+from tests.joined_secondaries.model import JSEagerParent, JSItem, JSOwner, JSParent, JSSpecialItem, JSTag
 
 RELATIONSHIPS = pytest.mark.parametrize("attribute_name", ["tags", "tags_by_rows"])
 
@@ -69,3 +79,63 @@ def test_joinedload_through_a_secondary_with_include_deleted(db_session):
     stmt = select(JSParent).options(joinedload(JSParent.tags)).execution_options(include_deleted=True)
 
     assert _tag_ids(db_session.scalars(stmt).unique().one()) == [10, 20]
+
+
+@pytest.mark.parametrize("entity", [JSParent, JSEagerParent], ids=["relationship", "lazy_joined_relationship"])
+def test_contains_eager_through_a_soft_deletable_secondary(db_session, entity):
+    """contains_eager() loads from the statement's own join, which the rewrite filters (#65)."""
+    stmt = select(entity).join(entity.tags).options(contains_eager(entity.tags))
+
+    assert _tag_ids(db_session.scalars(stmt).unique().one()) == [10]
+
+
+@pytest.mark.parametrize(
+    "make_option",
+    [lazyload, selectinload, subqueryload, joinedload],
+    ids=["lazyload", "selectinload", "subqueryload", "joinedload"],
+)
+def test_option_on_a_lazy_joined_relationship_through_a_soft_deletable_secondary(db_session, make_option):
+    """The statement's own option for the relationship keeps its strategy."""
+    parent = db_session.scalars(select(JSEagerParent).options(make_option(JSEagerParent.tags))).unique().one()
+
+    assert _tag_ids(parent) == [10]
+
+
+def test_option_with_criteria_on_a_lazy_joined_relationship_through_a_soft_deletable_secondary(db_session):
+    stmt = select(JSEagerParent).options(joinedload(JSEagerParent.tags.and_(JSTag.id > 10), innerjoin=True))
+
+    assert db_session.scalars(stmt).unique().all() == []
+
+
+def test_raiseload_wildcard_keeps_a_lazy_joined_relationship_through_a_secondary_unloaded(db_session):
+    parent = db_session.scalars(select(JSEagerParent).options(raiseload("*"))).unique().one()
+
+    with pytest.raises(exc.InvalidRequestError):
+        _tag_ids(parent)
+
+
+def test_defaultload_with_column_options_keeps_a_lazy_joined_relationship_filtered(db_session):
+    stmt = select(JSEagerParent).options(defaultload(JSEagerParent.tags).load_only(JSTag.id))
+
+    assert _tag_ids(db_session.scalars(stmt).unique().one()) == [10]
+
+
+def test_two_joinedload_options_for_the_same_path(db_session):
+    """The later option wins, as in SQLAlchemy, with its criteria."""
+    stmt = select(JSParent).options(joinedload(JSParent.tags), joinedload(JSParent.tags.and_(JSTag.id > 10)))
+
+    assert _tag_ids(db_session.scalars(stmt).unique().one()) == []
+
+
+def test_joinedload_of_type_a_subclass_through_a_soft_deletable_secondary(db_session):
+    stmt = select(JSOwner).options(joinedload(JSOwner.items.of_type(JSSpecialItem)).joinedload(JSSpecialItem.tags))
+
+    assert _tag_ids(db_session.scalars(stmt).unique().one().items[0]) == [10]
+
+
+def test_joinedload_through_a_with_polymorphic_entity_runs(db_session):
+    """A path through a with_polymorphic() entity cannot be named again, so it is left as it is."""
+    items = with_polymorphic(JSItem, [JSSpecialItem], aliased=True)
+    stmt = select(JSOwner).options(joinedload(JSOwner.items.of_type(items)).joinedload(items.JSSpecialItem.tags))
+
+    assert 10 in _tag_ids(db_session.scalars(stmt).unique().one().items[0])
