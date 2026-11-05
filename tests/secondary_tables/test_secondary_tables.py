@@ -8,16 +8,9 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import aliased, selectinload
 
-from sqlalchemy_easy_softdelete.handler.rewriter import SECONDARY_CRITERIA_SUPPORTED
 from tests.secondary_tables.model import STLink, STParent, STTag
 
-needs_secondary_criteria = pytest.mark.skipif(
-    not SECONDARY_CRITERIA_SUPPORTED,
-    reason="SQLAlchemy before 2.0.28 does not adapt relationship.and_() criteria to the secondary table's alias",
-)
 
-
-@needs_secondary_criteria
 @pytest.mark.parametrize("form", ["relationship", "target_and_relationship"])
 def test_join_along_a_relationship_with_a_soft_deletable_secondary_table(db_session, form):
     stmt = select(STParent.id, STTag.id)
@@ -27,14 +20,12 @@ def test_join_along_a_relationship_with_a_soft_deletable_secondary_table(db_sess
         assert db_session.execute(stmt).all() == [(1, 10)]
 
 
-@needs_secondary_criteria
 def test_outer_join_along_a_relationship_with_a_soft_deletable_secondary_table(db_session):
     rows = db_session.execute(select(STParent.id, STTag.id).outerjoin(STParent.tags)).all()
 
     assert rows == [(1, 10)]
 
 
-@needs_secondary_criteria
 def test_selectin_load_through_a_soft_deletable_secondary_table(db_session):
     parent = db_session.scalars(select(STParent).options(selectinload(STParent.tags))).one()
 
@@ -53,7 +44,6 @@ def test_include_deleted_on_a_join_with_a_soft_deletable_secondary_table(db_sess
     assert db_session.execute(stmt).all() == [(1, 10), (1, 20)]
 
 
-@needs_secondary_criteria
 def test_join_set_aside_by_with_only_columns_with_a_soft_deletable_secondary_table(db_session):
     stmt = select(STParent).join(STParent.tags).with_only_columns(STParent.id, STTag.id)
 
@@ -61,7 +51,6 @@ def test_join_set_aside_by_with_only_columns_with_a_soft_deletable_secondary_tab
     assert db_session.query(STParent).join(STParent.tags).with_entities(STParent.id, STTag.id).all() == [(1, 10)]
 
 
-@needs_secondary_criteria
 def test_selectin_load_for_parents_loaded_with_include_deleted(db_session):
     """A selectin load selects its parents by primary key, from an alias of the parent table that SQLAlchemy
     makes: it loads the related rows of the soft-deleted parents a statement loaded on purpose."""

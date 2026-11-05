@@ -849,7 +849,7 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "sqlalchemy", specifier = ">=2.0.20,<2.2" }]
+requires-dist = [{ name = "sqlalchemy", specifier = ">=2.0.28,<2.2" }]
 
 [package.metadata.requires-dev]
 dev = [

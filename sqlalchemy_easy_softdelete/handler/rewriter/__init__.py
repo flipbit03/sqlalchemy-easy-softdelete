@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import contextvars
 import itertools
-import re
 import threading
 import types
 from collections import OrderedDict
@@ -43,17 +42,6 @@ from sqlalchemy_easy_softdelete.hook import IgnoredTable
 
 # Type alias for statements we can rewrite
 Statement = Select | FromStatement | CompoundSelect | Executable | LambdaElement
-
-_SA_VERSION = tuple(int(part) for part in re.findall(r"\d+", sqlalchemy.__version__)[:3])
-SECONDARY_CRITERIA_SUPPORTED = _SA_VERSION >= (2, 0, 28)
-"""Whether SQLAlchemy adapts the criteria of ``relationship.and_()`` that refer to the relationship's
-secondary to the alias of it it joins (from 2.0.28 on): soft-deletable secondary tables, and subqueries of
-them, are only filtered in relationship joins from that release on."""
-
-EXPLICIT_ON_CLAUSES_KEEP_LOADER_CRITERIA = _SA_VERSION >= (2, 0, 22)
-"""Whether SQLAlchemy applies ``with_loader_criteria()`` to an entity joined with an explicit ON clause (from
-2.0.22 on). Before, an outer join that gives no ON clause keeps its filter in the WHERE clause in a statement
-with loader criteria of its own, which an explicit one would lose."""
 
 RELATIONSHIP_LOAD: contextvars.ContextVar[bool] = contextvars.ContextVar("relationship_load", default=False)
 """Whether the statement being rewritten loads a relationship (set by the hook from
@@ -750,8 +738,6 @@ class SoftDeleteQueryRewriter:
 
     def _secondary_criteria(self, stmt: Select[Any]) -> tuple[tuple[int, Any], ...]:
         """See ``_SelectPlan.secondary_criteria``."""
-        if not SECONDARY_CRITERIA_SUPPORTED:
-            return ()
         criteria: list[tuple[int, Any]] = []
         for index, (target, onclause, _from, _flags) in enumerate(_joins_of(stmt)):
             attribute = onclause if isinstance(onclause, QueryableAttribute) else target
@@ -793,10 +779,6 @@ class SoftDeleteQueryRewriter:
                 if holds_filtered(join.right):
                     found.append((("from", index, path), None))
         joins_by_right: dict[int, Join] | None = None
-        user_criteria = not EXPLICIT_ON_CLAUSES_KEEP_LOADER_CRITERIA and any(
-            isinstance(option, LoaderCriteriaOption) and not isinstance(option, _SoftDeleteCriteria)
-            for option in stmt._with_options
-        )
         for position, (target, onclause, _from, flags) in enumerate(_joins_of(stmt)):
             # A join to a join written with Core: its own outer joins come first.
             for path, join in _outer_joins_in(target):
@@ -809,8 +791,6 @@ class SoftDeleteQueryRewriter:
                 continue
             computed = None
             if onclause is None and not isinstance(target, QueryableAttribute):
-                if user_criteria:
-                    continue
                 if joins_by_right is None:
                     joins_by_right = _joins_by_right(final_froms)
                 joined = joins_by_right.get(id(_plain(_ungrouped(selectable))))

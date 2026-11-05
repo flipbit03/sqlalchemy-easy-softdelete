@@ -9,18 +9,11 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
-from sqlalchemy_easy_softdelete.handler.rewriter import SECONDARY_CRITERIA_SUPPORTED
 from tests.secondary_subqueries.model import SSChild, SSGrandChild, SSNickname, SSParent
-
-needs_secondary_criteria = pytest.mark.skipif(
-    not SECONDARY_CRITERIA_SUPPORTED,
-    reason="SQLAlchemy before 2.0.28 does not adapt relationship.and_() criteria to the secondary's alias",
-)
 
 RELATIONSHIPS = ["grandchildren", "grandchildren_by_rows"]
 
 
-@needs_secondary_criteria
 @pytest.mark.parametrize("relationship_name", RELATIONSHIPS)
 @pytest.mark.parametrize("outer", [False, True], ids=["join", "outerjoin"])
 def test_join_through_a_secondary_subquery(db_session, relationship_name, outer):
@@ -32,7 +25,6 @@ def test_join_through_a_secondary_subquery(db_session, relationship_name, outer)
         assert db_session.execute(stmt).all() == [(1, 10)]
 
 
-@needs_secondary_criteria
 @pytest.mark.parametrize("relationship_name", RELATIONSHIPS)
 def test_selectin_load_through_a_secondary_subquery(db_session, relationship_name):
     attribute = getattr(SSParent, relationship_name)
@@ -82,7 +74,6 @@ def nicknames(db_session):
     return db_session
 
 
-@needs_secondary_criteria
 @pytest.mark.parametrize("outer", [False, True], ids=["join", "outerjoin"])
 def test_join_through_a_secondary_subquery_that_outer_joins_a_table(nicknames, outer):
     """A child without a nickname, or with a soft-deleted one, still links its grandchildren, as in the lazy load:

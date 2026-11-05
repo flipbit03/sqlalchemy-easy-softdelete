@@ -10,7 +10,6 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, aliased, with_loader_criteria
 from sqlalchemy.orm import join as orm_join
 
-from sqlalchemy_easy_softdelete.handler.rewriter import EXPLICIT_ON_CLAUSES_KEEP_LOADER_CRITERIA
 from tests.default_config.model import SDChild, SDChildChild, SDParent
 
 DELETED_AT = datetime(2000, 1, 1)
@@ -253,8 +252,7 @@ def test_outer_join_without_an_onclause_keeps_the_statements_loader_criteria(out
     rows = sorted(outer_join_session.execute(stmt).all(), key=repr)
 
     assert left_out not in {child_id for _, child_id in rows}
-    if EXPLICIT_ON_CLAUSES_KEEP_LOADER_CRITERIA:
-        kept = [row for row in expected if row[1] != left_out]
-        parents = {parent_id for parent_id, _ in expected}
-        orphaned = parents - {parent_id for parent_id, _ in kept}
-        assert rows == sorted(kept + [(parent_id, None) for parent_id in orphaned], key=repr)
+    kept = [row for row in expected if row[1] != left_out]
+    parents = {parent_id for parent_id, _ in expected}
+    orphaned = parents - {parent_id for parent_id, _ in kept}
+    assert rows == sorted(kept + [(parent_id, None) for parent_id in orphaned], key=repr)
