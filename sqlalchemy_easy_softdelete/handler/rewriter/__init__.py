@@ -50,6 +50,11 @@ SECONDARY_CRITERIA_SUPPORTED = _SA_VERSION >= (2, 0, 28)
 secondary to the alias of it it joins (from 2.0.28 on): soft-deletable secondary tables, and subqueries of
 them, are only filtered in relationship joins from that release on."""
 
+EXPLICIT_ON_CLAUSES_KEEP_LOADER_CRITERIA = _SA_VERSION >= (2, 0, 22)
+"""Whether SQLAlchemy applies ``with_loader_criteria()`` to an entity joined with an explicit ON clause (from
+2.0.22 on). Before, an outer join that gives no ON clause keeps its filter in the WHERE clause in a statement
+with loader criteria of its own, which an explicit one would lose."""
+
 RELATIONSHIP_LOAD: contextvars.ContextVar[bool] = contextvars.ContextVar("relationship_load", default=False)
 """Whether the statement being rewritten loads a relationship (set by the hook from
 ``ORMExecuteState.is_relationship_load``). Such a statement selects its parent rows by primary key, from an
@@ -119,6 +124,14 @@ class _SelectPlan:
     secondary is a soft-deletable table, or a subquery of soft-deletable tables (see ``_soft_delete_condition``),
     by the position of the join: added to the join's ON clause with ``relationship.and_()``, since SQLAlchemy
     joins an alias of the secondary that it makes while compiling the statement."""
+
+    outer_joins: tuple[tuple[Any, Any], ...]
+    """The LEFT OUTER JOINs of the statement whose right side holds soft-deletable tables or aliases of them,
+    each with the ON clause SQLAlchemy finds for it when it gives none (else None). Those tables are filtered
+    in the join's ON clause, not the WHERE clause, so that a row whose joined rows are all soft-deleted is
+    kept, with NULLs, as if they did not exist. A join is numbered as ``_joins_of()`` lists it, or, for one
+    written with Core in ``select_from()``, by ``("from", index, path)`` (see ``_outer_joins_in``).
+    A FULL OUTER JOIN keeps the rows of both sides: its tables stay filtered in the WHERE clause."""
 
     filters_table_aliases: bool
     """Whether the FROM clause holds aliases of soft-deletable tables that the statement names
@@ -516,11 +529,17 @@ class SoftDeleteQueryRewriter:
                 if key in found_aliases and self._alias_column(alias) is not None
             ]
 
+        outer_joins = self._outer_joins(stmt, final_froms, columns, table_aliases)
+        if any(_refers_to_statement_objects(onclause) for _, onclause in outer_joins):
+            # The ON clause SQLAlchemy found for a join that gives none refers to this statement's aliases or
+            # subqueries: a later statement of the same shape has its own.
+            reusable = False
         plan = _SelectPlan(
             tuple(columns),
             tuple(entities.items()),
             rewrites_subqueries=bool(subqueries),
             secondary_criteria=self._secondary_criteria(stmt),
+            outer_joins=outer_joins,
             filters_table_aliases=bool(table_aliases),
             reusable=reusable,
         )
@@ -570,9 +589,9 @@ class SoftDeleteQueryRewriter:
             if RELATIONSHIP_LOAD.get():
                 aliases = []
             analysis = _FromAnalysis(list(scan.subqueries.values()), {}, aliases)
+        copies: dict[int, FromClause] = {}
         if plan.rewrites_subqueries and analysis is not None:
             memo: dict[int, FromClause | None] = {}
-            copies: dict[int, FromClause] = {}
             for from_obj in analysis.subqueries:
                 copy = self._filtered_copy(from_obj, memo)
                 if copy is not None:
@@ -585,13 +604,17 @@ class SoftDeleteQueryRewriter:
         if plan.secondary_criteria:
             stmt = _with_secondary_criteria(stmt, plan.secondary_criteria)
 
+        filters: list[Any] = list(plan.filter_columns)
         if plan.filters_table_aliases and analysis is not None and not RELATIONSHIP_LOAD.get():
             for alias in analysis.table_aliases:
                 column = self._alias_column(alias)
                 if column is not None:
-                    stmt = stmt.filter(column.is_(None))
+                    filters.append(column)
 
-        for column in plan.filter_columns:
+        if plan.outer_joins:
+            stmt, filters = _with_outer_join_filters(stmt, plan.outer_joins, filters, copies)
+
+        for column in filters:
             stmt = stmt.filter(column.is_(None))
         return stmt
 
@@ -737,15 +760,79 @@ class SoftDeleteQueryRewriter:
             prop = attribute.property
             if not isinstance(prop, RelationshipProperty) or prop.secondary is None:
                 continue
-            condition = self._soft_delete_condition(prop.secondary)
+            # The relationship's conditions hold annotated copies of the secondary's columns.
+            secondary = _plain(prop.secondary)
+            linking = {
+                id(secondary.c[element.key])
+                for clause in (prop.primaryjoin, prop.secondaryjoin)
+                if clause is not None
+                for element in visitors.iterate(clause)
+                if isinstance(element, ColumnClause)
+                and _plain(element.table) is secondary
+                and element.key in secondary.c
+            }
+            condition = self._soft_delete_condition(prop.secondary, linking=linking)
             if condition is not None:
                 criteria.append((index, condition))
         return tuple(criteria)
 
-    def _soft_delete_condition(self, secondary: Any) -> Any:
+    def _outer_joins(
+        self, stmt: Select[Any], final_froms: Any, columns: list[Column[Any]], table_aliases: list[Alias]
+    ) -> tuple[tuple[Any, Any], ...]:
+        """See ``_SelectPlan.outer_joins``."""
+        filtered = {id(column.table) for column in columns} | {id(_plain(alias)) for alias in table_aliases}
+        if not filtered:
+            return ()
+
+        def holds_filtered(selectable: Any) -> bool:
+            return any(id(_plain(leaf)) in filtered for leaf in _join_leaves(selectable))
+
+        found: list[tuple[Any, Any]] = []
+        for index, from_obj in enumerate(stmt._from_obj):
+            for path, join in _outer_joins_in(from_obj):
+                if holds_filtered(join.right):
+                    found.append((("from", index, path), None))
+        joins_by_right: dict[int, Join] | None = None
+        user_criteria = not EXPLICIT_ON_CLAUSES_KEEP_LOADER_CRITERIA and any(
+            isinstance(option, LoaderCriteriaOption) and not isinstance(option, _SoftDeleteCriteria)
+            for option in stmt._with_options
+        )
+        for position, (target, onclause, _from, flags) in enumerate(_joins_of(stmt)):
+            # A join to a join written with Core: its own outer joins come first.
+            for path, join in _outer_joins_in(target):
+                if holds_filtered(join.right):
+                    found.append((("target", position, path), None))
+            if not flags.get("isouter") or flags.get("full"):
+                continue
+            selectable = _join_target_selectable(target)
+            if selectable is None or not holds_filtered(selectable):
+                continue
+            computed = None
+            if onclause is None and not isinstance(target, QueryableAttribute):
+                if user_criteria:
+                    continue
+                if joins_by_right is None:
+                    joins_by_right = _joins_by_right(final_froms)
+                joined = joins_by_right.get(id(_plain(_ungrouped(selectable))))
+                if joined is None or joined.onclause is None:
+                    continue
+                computed = joined.onclause
+            found.append((position, computed))
+        return tuple(found)
+
+    def _soft_delete_condition(
+        self, secondary: Any, *, outer_joined: bool = False, linking: set[int] | frozenset[int] = frozenset()
+    ) -> Any:
         """The condition that leaves out the soft-deleted rows of a table, or of the soft-deletable tables of a
         subquery (on the soft-delete column it passes on, or through the primary key it passes on), or None:
-        for a relationship's secondary, or a class mapped to a subquery."""
+        for a relationship's secondary, or a class mapped to a subquery.
+
+        A table the subquery outer joins leaves NULLs for its soft-deleted rows, which keeps the subquery's row:
+        it is left out, unless ``outer_joined``, or unless one of the subquery's columns from it is in
+        ``linking`` (by id: the columns a relationship joins on). SQLAlchemy selects from its own alias of the
+        subquery, where those rows' values show: a mapped class's joined eager load selects them, and a
+        relationship would join on them.
+        """
         if isinstance(secondary, Table):
             columns: list[Column[Any]] = []
             self._collect_table(secondary, columns)
@@ -755,8 +842,11 @@ class SoftDeleteQueryRewriter:
             return None
         conditions = []
         for from_obj in subquery.element.get_final_froms():
+            inner = {id(leaf) for leaf in _inner_joined_leaves(from_obj)}
             for table in _join_leaves(from_obj):
                 if not isinstance(table, Table):
+                    continue
+                if not outer_joined and id(table) not in inner and not _links_on(secondary, table, linking):
                     continue
                 columns = []
                 self._collect_table(table, columns)
@@ -924,7 +1014,7 @@ class SoftDeleteQueryRewriter:
                 and not hasattr(entity_class, self.deleted_field_name)
                 and _subquery_in(mapper.local_table) is not None
             ):
-                condition = _on_attributes(self._soft_delete_condition(mapper.local_table), mapper)
+                condition = _on_attributes(self._soft_delete_condition(mapper.local_table, outer_joined=True), mapper)
             return self._mapped_subquery_conditions.setdefault(entity_class, condition)
         return self._mapped_subquery_conditions[entity_class]
 
@@ -1118,14 +1208,7 @@ def _implicit_join_lefts(stmt: Select[Any], final_froms: Any) -> dict[int, Any]:
     """The left side SQLAlchemy chose in ``final_froms`` (the analyzed FROM clause of ``stmt``) for each
     join of ``stmt`` that does not give one (``join(Target)``, ``join(Target, onclause)``), by the id of
     the join: the FROM element the join attaches to, as SQLAlchemy finds it among those of its left."""
-    joins_by_right: dict[int, Join] = {}
-    stack = list(final_froms)
-    while stack:
-        from_obj = _ungrouped(stack.pop())
-        if isinstance(from_obj, Join):
-            joins_by_right.setdefault(id(_plain(_ungrouped(from_obj.right))), from_obj)
-            stack.extend((from_obj.left, from_obj.right))
-
+    joins_by_right = _joins_by_right(final_froms)
     lefts: dict[int, Any] = {}
     for join in _joins_of(stmt):
         target, onclause, from_, _flags = join
@@ -1139,6 +1222,145 @@ def _implicit_join_lefts(stmt: Select[Any], final_froms: Any) -> dict[int, Any]:
         if len(indexes) == 1:
             lefts[id(join)] = candidates[indexes[0]]
     return lefts
+
+
+def _joins_by_right(final_froms: Any) -> dict[int, Join]:
+    """The joins of ``final_froms`` (the analyzed FROM clause of a statement) by the id of their right side."""
+    joins_by_right: dict[int, Join] = {}
+    stack = list(final_froms)
+    while stack:
+        from_obj = _ungrouped(stack.pop())
+        if isinstance(from_obj, Join):
+            joins_by_right.setdefault(id(_plain(_ungrouped(from_obj.right))), from_obj)
+            stack.extend((from_obj.left, from_obj.right))
+    return joins_by_right
+
+
+def _join_target_selectable(target: Any) -> Any:
+    """The selectable a join of a statement joins to: that of a relationship's target (or its ``of_type()``
+    entity), of an entity, or a table."""
+    if isinstance(target, QueryableAttribute):
+        entity = _relationship_entity(target)
+        return entity.selectable if entity is not None else None
+    insp = inspect(target, raiseerr=False)
+    return getattr(insp, "selectable", None)
+
+
+def _outer_joins_in(from_obj: Any, path: tuple[str, ...] = ()) -> list[tuple[tuple[str, ...], Join]]:
+    """The LEFT OUTER JOINs of a join tree written with Core (or ``orm.join()``), each with its path from the
+    root (``l``/``r`` steps)."""
+    from_obj = _ungrouped(from_obj)
+    if not isinstance(from_obj, Join):
+        return []
+    found = _outer_joins_in(from_obj.left, path + ("l",)) + _outer_joins_in(from_obj.right, path + ("r",))
+    if from_obj.isouter and not from_obj.full:
+        found.append((path, from_obj))
+    return found
+
+
+def _join_at(from_obj: Any, path: tuple[str, ...]) -> Join:
+    for step in path:
+        from_obj = _ungrouped(from_obj)
+        from_obj = from_obj.left if step == "l" else from_obj.right
+    return cast(Join, _ungrouped(from_obj))
+
+
+def _refers_to_statement_objects(onclause: Any) -> bool:
+    """Whether ``onclause`` refers to a FROM other than a table (an alias, a subquery): one of its statement's."""
+    if onclause is None:
+        return False
+    return any(not isinstance(from_obj, Table) for from_obj in onclause._from_objects)
+
+
+def _with_outer_join_filters(
+    stmt: Select[Any], outer_joins: tuple[tuple[Any, Any], ...], filters: list[Any], copies: dict[int, FromClause]
+) -> tuple[Select[Any], list[Any]]:
+    """``stmt`` with the soft-delete columns of ``filters`` that belong to the right side of one of its
+    ``outer_joins`` filtered in that join's ON clause, and the columns left for the WHERE clause.
+
+    The right sides are read from ``stmt`` itself, whose aliases of tables are its own. The outer joins nested in
+    a join come first, so that each column goes to the innermost one. A join that gives no ON clause gets the
+    one SQLAlchemy found, on the copies of the subqueries it refers to (``copies``).
+    """
+    remaining = {id(column): column for column in filters}
+
+    def take(selectable: Any) -> list[Any]:
+        leaves = {id(_plain(leaf)) for leaf in _join_leaves(selectable)}
+        moved = [column for column in remaining.values() if id(_plain(column.table)) in leaves]
+        for column in moved:
+            del remaining[id(column)]
+        return [column.is_(None) for column in moved]
+
+    from_objs = list(stmt._from_obj)
+    joins = list(_joins_of(stmt))
+    for position, computed in outer_joins:
+        if isinstance(position, tuple):
+            kind, index, path = position
+            tree = from_objs[index] if kind == "from" else joins[index][0]
+            join = _join_at(tree, path)
+            conditions = take(join.right)
+            if conditions:
+                tree = _with_on_conditions(tree, join, conditions)
+                if kind == "from":
+                    from_objs[index] = tree
+                else:
+                    joins[index] = (tree, *joins[index][1:])
+        else:
+            conditions = take(_join_target_selectable(joins[position][0]))
+            if conditions:
+                computed = _on_copies(computed, copies) if computed is not None else None
+                joins[position] = _join_with_conditions(joins[position], conditions, computed)
+
+    rewritten = stmt._generate()
+    rewritten._from_obj = tuple(from_objs)
+    offset = len(stmt._setup_joins)
+    rewritten._setup_joins = tuple(joins[:offset])
+    if stmt._memoized_select_entities:
+        memoized = []
+        for entities in stmt._memoized_select_entities:
+            joins_set_aside = tuple(joins[offset : offset + len(entities._setup_joins)])
+            offset += len(entities._setup_joins)
+            if any(new is not old for new, old in zip(joins_set_aside, entities._setup_joins)):
+                entities = entities._clone()
+                entities._setup_joins = joins_set_aside
+            memoized.append(entities)
+        rewritten._memoized_select_entities = tuple(memoized)
+    return rewritten, list(remaining.values())
+
+
+def _join_with_conditions(join: tuple[Any, ...], conditions: list[Any], computed: Any) -> tuple[Any, ...]:
+    """A join of a statement (a ``_setup_joins`` entry) with ``conditions`` added to its ON clause: to the
+    relationship it joins along, or to its ON clause (``computed``, for a join that gives none)."""
+    target, onclause, from_, flags = join
+    if isinstance(target, QueryableAttribute) and onclause is None:
+        return (target.and_(*conditions), onclause, from_, flags)
+    if isinstance(onclause, QueryableAttribute):
+        return (target, onclause.and_(*conditions), from_, flags)
+    return (target, and_(cast(Any, onclause if onclause is not None else computed), *conditions), from_, flags)
+
+
+def _with_on_conditions(from_obj: Any, join: Join, conditions: list[Any]) -> Any:
+    """``from_obj``, a join tree written with Core, with ``conditions`` added to the ON clause of ``join``."""
+    replacement = join._clone()
+    replacement.onclause = and_(cast(Any, join.onclause), *conditions)
+
+    def replace(element: Any, **kw: Any) -> Any:
+        return replacement if element is join else None
+
+    return visitors.replacement_traverse(from_obj, {}, replace)
+
+
+def _on_copies(clause: Any, copies: dict[int, FromClause]) -> Any:
+    """``clause`` with the columns of the subqueries copied in ``copies`` replaced by those of the copies."""
+    if not copies:
+        return clause
+
+    def replace(element: Any, **kw: Any) -> Any:
+        table = element.table if isinstance(element, ColumnClause) else None
+        copy = copies.get(id(_plain(table))) if table is not None else None
+        return copy.c[element.key] if copy is not None else None
+
+    return visitors.replacement_traverse(clause, {}, replace)
 
 
 def _joins_to_without_its_columns(stmt: Select[Any], targets: set[int]) -> bool:
@@ -1182,6 +1404,25 @@ def _tables_named_in(clause: Any) -> list[Any]:
             tables.append(table)
         stack.extend(element.get_children())
     return tables
+
+
+def _links_on(selectable: Any, table: Table, linking: set[int] | frozenset[int]) -> bool:
+    """Whether one of the columns of ``selectable`` that come from ``table`` is in ``linking`` (by id)."""
+    return any(
+        id(column) in linking and any(table.c.contains_column(base) for base in column.base_columns)
+        for column in selectable.c
+    )
+
+
+def _inner_joined_leaves(from_obj: Any) -> list[Any]:
+    """The leaves of a join that each of its rows has a row of: those not on the right of a LEFT OUTER JOIN."""
+    from_obj = _ungrouped(from_obj)
+    if not isinstance(from_obj, Join):
+        return [from_obj]
+    left = _inner_joined_leaves(from_obj.left)
+    if from_obj.isouter and not from_obj.full:
+        return left
+    return left + _inner_joined_leaves(from_obj.right)
 
 
 def _join_leaves(from_obj: Any) -> list[Any]:
@@ -1237,12 +1478,7 @@ def _place_copies(stmt: Select[Any], copies: dict[int, FromClause], join_lefts: 
         return from_obj
 
     def swap_columns(clause: Any) -> Any:
-        def replace(element: Any, **kw: Any) -> Any:
-            table = element.table if isinstance(element, ColumnClause) else None
-            copy = copies.get(id(_plain(table))) if table is not None else None
-            return copy.c[element.key] if copy is not None else None
-
-        return visitors.replacement_traverse(clause, {}, replace)
+        return _on_copies(clause, copies)
 
     def swap_join(join: tuple[Any, ...]) -> tuple[Any, ...]:
         target, onclause, from_, flags = join

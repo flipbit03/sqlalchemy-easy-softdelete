@@ -85,13 +85,13 @@ def nicknames(db_session):
 @needs_secondary_criteria
 @pytest.mark.parametrize("outer", [False, True], ids=["join", "outerjoin"])
 def test_join_through_a_secondary_subquery_that_outer_joins_a_table(nicknames, outer):
-    """A child without a nickname still links its grandchildren; one with a soft-deleted nickname does not, as
-    in the lazy load."""
+    """A child without a nickname, or with a soft-deleted one, still links its grandchildren, as in the lazy load:
+    the subquery outer joins the nicknames, so a soft-deleted nickname leaves NULLs, as if it did not exist."""
     stmt = select(SSGrandChild.id).order_by(SSGrandChild.id)
     stmt = (
         stmt.outerjoin(SSParent.grandchildren_by_nickname) if outer else stmt.join(SSParent.grandchildren_by_nickname)
     )
     stmt = stmt.select_from(SSParent)
 
-    assert nicknames.scalars(stmt).all() == [10, 30]
-    assert [grandchild.id for grandchild in nicknames.get(SSParent, 1).grandchildren_by_nickname] == [10, 30]
+    assert nicknames.scalars(stmt).all() == [10, 30, 40]
+    assert [grandchild.id for grandchild in nicknames.get(SSParent, 1).grandchildren_by_nickname] == [10, 30, 40]

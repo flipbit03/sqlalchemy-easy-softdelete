@@ -611,15 +611,34 @@ def test_eager_load_into_an_aliased_subquery_that_includes_deleted_loads_them(se
     assert sorted(child.id for parent in parents for child in parent.children) == sorted(expected)
 
 
+def _active_children_with_their_active_parent(session: Session) -> list[tuple[int, int | None]]:
+    """Each active child with its parent's id, or None when the parent is soft-deleted."""
+    stmt = (
+        select(SDChild.id, SDParent.id, SDParent.deleted_at)
+        .outerjoin(SDChild.parent)
+        .where(SDChild.deleted_at.is_(None))
+        .execution_options(include_deleted=True)
+    )
+    rows = [
+        (child_id, None if deleted_at is not None else parent_id)
+        for child_id, parent_id, deleted_at in session.execute(stmt)
+    ]
+    return sorted(rows, key=repr)
+
+
 @pytest.mark.parametrize("outer", [False, True], ids=["join", "outerjoin"])
 def test_join_from_an_aliased_subquery_along_its_relationship(seeded_session, outer):
     alias = _aliased_active_children()
-    join_from = select(alias.id).outerjoin_from if outer else select(alias.id).join_from
+    stmt = select(alias.id, SDParent.id)
+    join_from = stmt.outerjoin_from if outer else stmt.join_from
 
-    ids = sorted(seeded_session.scalars(join_from(alias, alias.parent)))
+    rows = sorted(seeded_session.execute(join_from(alias, alias.parent)).all(), key=repr)
 
-    # The parent's filter is in the WHERE clause, so an outer join drops the children of deleted parents too.
-    assert ids == _active_child_ids_of_active_parents(seeded_session)
+    # The soft-deleted parent is never joined: a join drops its children, an outer join keeps them with NULLs, as
+    # if it did not exist (its filter is in the ON clause).
+    expected = _active_children_with_their_active_parent(seeded_session)
+    assert any(parent_id is None for _, parent_id in expected)
+    assert rows == (expected if outer else [row for row in expected if row[1] is not None])
 
 
 def test_eager_load_next_to_an_aliased_subquery_without_the_soft_delete_column(seeded_session):
