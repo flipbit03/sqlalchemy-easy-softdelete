@@ -5,13 +5,16 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.orm import Session, sessionmaker
 
 from tests.mapped_eager_relationships.model import (
+    MEArchive,
     MEChild,
     MEHolder,
     MEInnerChild,
     MEInnerParent,
+    MEManager,
     MEModelBase,
     MENode,
     MEParent,
+    MEReport,
     METoy,
 )
 
@@ -34,6 +37,9 @@ def db_session(db_connection: Connection) -> Session:
         MENode(id=2, parent_id=1),
         MENode(id=3, parent_id=1, deleted_at=deleted),
         MEHolder(id=1, parent_id=1),
+        MEManager(id=1),
+        MEArchive(id=1),
+        MEArchive(id=2),
     ])
     session.flush()
     session.add_all([
@@ -41,6 +47,8 @@ def db_session(db_connection: Connection) -> Session:
         METoy(id=2, child_id=1, deleted_at=deleted),
         MENode(id=4, parent_id=2),
         MENode(id=5, parent_id=2, deleted_at=deleted),
+        MEReport(id=1, manager_id=1),
+        MEReport(id=2, manager_id=1, deleted_at=deleted),
     ])
     session.flush()
     session.expunge_all()

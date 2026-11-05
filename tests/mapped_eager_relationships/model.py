@@ -2,8 +2,8 @@
 
 from datetime import datetime
 
-from sqlalchemy import ForeignKey, Integer, select
-from sqlalchemy.orm import DeclarativeBase, Mapped, foreign, mapped_column, relationship
+from sqlalchemy import ForeignKey, Integer, String, select
+from sqlalchemy.orm import DeclarativeBase, Mapped, aliased, foreign, mapped_column, relationship
 
 from sqlalchemy_easy_softdelete.mixin import generate_soft_delete_mixin_class
 
@@ -83,3 +83,53 @@ MEParent.child_names = relationship(  # type: ignore[attr-defined]
     order_by=lambda: child_names.c.id,
     viewonly=True,
 )
+
+
+# Children through aliases of their class over subqueries the eager loading criteria must not filter.
+every_child = aliased(MEChild, select(MEChild).execution_options(include_deleted=True).subquery())
+child_ids = aliased(MEChild, select(child.c.id, child.c.parent_id).subquery())
+
+
+class MEArchive(MEModelBase, MESoftDeleteMixin):
+    """Eager loads every child of the parent with its id, soft-deleted ones included."""
+
+    __tablename__ = "mearchive"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    every_child: Mapped[list[MEChild]] = relationship(
+        every_child,
+        primaryjoin=lambda: MEArchive.id == foreign(every_child.parent_id),
+        lazy="joined",
+        order_by=lambda: every_child.id,
+        viewonly=True,
+    )
+
+
+MEParent.children_by_id = relationship(  # type: ignore[attr-defined]
+    child_ids,
+    primaryjoin=lambda: MEParent.id == foreign(child_ids.parent_id),
+    order_by=lambda: child_ids.id,
+    viewonly=True,
+)
+
+
+class MEEmployee(MEModelBase, MESoftDeleteMixin):
+    """Joined-table inheritance: the subclass's lazy="joined" relationship is joined when the base class is loaded
+    polymorphically."""
+
+    __tablename__ = "meemployee"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    kind: Mapped[str] = mapped_column(String(10))
+    __mapper_args__ = {"polymorphic_on": kind, "polymorphic_identity": "employee"}
+
+
+class MEManager(MEEmployee):
+    __tablename__ = "memanager"
+    id: Mapped[int] = mapped_column(Integer, ForeignKey("meemployee.id"), primary_key=True)
+    reports: Mapped[list["MEReport"]] = relationship(lazy="joined", order_by="MEReport.id", viewonly=True)
+    __mapper_args__ = {"polymorphic_identity": "manager", "polymorphic_load": "inline"}
+
+
+class MEReport(MEModelBase, MESoftDeleteMixin):
+    __tablename__ = "mereport"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    manager_id: Mapped[int] = mapped_column(Integer, ForeignKey("memanager.id"))

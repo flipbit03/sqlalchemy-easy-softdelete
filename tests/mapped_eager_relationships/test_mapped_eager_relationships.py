@@ -4,9 +4,18 @@ does: SQLAlchemy joins them while it compiles a statement that loads their class
 import pickle
 
 from sqlalchemy import select
-from sqlalchemy.orm import aliased, joinedload, lazyload, selectinload
+from sqlalchemy.orm import aliased, joinedload, lazyload, selectinload, with_polymorphic
 
-from tests.mapped_eager_relationships.model import MEHolder, MEInnerParent, MENode, MEParent
+from tests.mapped_eager_relationships.model import (
+    MEArchive,
+    MEEmployee,
+    MEHolder,
+    MEInnerParent,
+    MEManager,
+    MENode,
+    MEParent,
+    child_ids,
+)
 
 ACTIVE_CHILDREN = [(1, [1]), (2, [])]
 
@@ -88,3 +97,31 @@ def test_lazy_joined_relationship_of_pickled_instances(db_session):
     parents = db_session.scalars(select(MEParent).order_by(MEParent.id)).unique()
 
     assert _children(pickle.loads(pickle.dumps(parent)) for parent in parents) == ACTIVE_CHILDREN
+
+
+def test_lazy_joined_relationship_to_an_alias_over_an_include_deleted_select(db_session):
+    """An alias of the class over a SELECT that includes soft-deleted rows keeps them."""
+    archives = db_session.scalars(select(MEArchive).order_by(MEArchive.id)).unique()
+
+    assert [(archive.id, [child.id for child in archive.every_child]) for archive in archives] == [
+        (1, [1, 2]),
+        (2, [3]),
+    ]
+
+
+def test_relationship_to_an_alias_over_a_select_without_the_column_next_to_a_lazy_joined_one(db_session):
+    """The criteria of the lazy="joined" relationship's class reach the loads of the parent's other relationships,
+    and stay off an alias of the class over a SELECT that leaves out the soft-delete column."""
+    parents = db_session.scalars(select(MEParent).order_by(MEParent.id)).unique().all()
+    joined = db_session.execute(select(MEParent.id, child_ids.id).join(MEParent.children_by_id)).all()
+
+    assert [(parent.id, [child.id for child in parent.children_by_id]) for parent in parents] == ACTIVE_CHILDREN
+    assert sorted(joined) == [(1, 1)]
+
+
+def test_lazy_joined_relationship_of_a_subclass_loaded_polymorphically(db_session):
+    for entity in (MEEmployee, with_polymorphic(MEEmployee, [MEManager])):
+        db_session.expunge_all()
+        employees = db_session.scalars(select(entity)).unique().all()
+
+        assert [(employee.id, [report.id for report in employee.reports]) for employee in employees] == [(1, [1])]
