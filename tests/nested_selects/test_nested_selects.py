@@ -286,3 +286,33 @@ def test_select_nested_in_a_nested_select_that_correlates_away_the_table(db_sess
 def test_select_nested_in_the_having_clause_only(db_session, make_clause):
     """One that is not also in the columns or GROUP BY clause is filtered like one of the WHERE clause."""
     assert _ids(db_session, select(NSParent.id).group_by(NSParent.id).having(make_clause())) == [1]
+
+
+def test_select_nested_in_the_criterion_of_any_or_has(db_session):
+    """Owners whose parent has an active child: owner 2's parent only has a soft-deleted one."""
+    has_any = select(NSOwner.id).where(NSOwner.parent.has(NSParent.children.any()))
+    has_in = select(NSOwner.id).where(NSOwner.parent.has(NSParent.id.in_(select(NSChild.parent_id))))
+
+    assert _ids(db_session, has_any) == [1]
+    assert _ids(db_session, has_in) == [1]
+
+
+def test_any_in_the_having_clause_next_to_a_scalar_subquery_in_the_columns(db_session):
+    stmt = select(NSParent.id, _children_count().label("n")).group_by(NSParent.id).having(NSParent.children.any())
+
+    assert db_session.execute(stmt).all() == [(1, 1)]
+
+
+def test_select_nested_in_the_group_by_and_having_clauses_holding_a_select(db_session):
+    """PostgreSQL matches HAVING to GROUP BY by expression, including the SELECT nested in it."""
+    owned = exists(select(NSOwner.id).where(NSOwner.parent_id == NSChild.parent_id))
+    count = select(func.count(NSChild.id)).where(NSChild.parent_id == NSParent.id, owned).scalar_subquery()
+    stmt = (
+        select(count, func.count(NSParent.id))
+        .where(NSParent.id.in_(select(NSOwner.parent_id)))
+        .group_by(count)
+        .having(count >= 0)
+        .order_by(count)
+    )
+
+    assert db_session.execute(stmt).all() == [(0, 1), (1, 1)]

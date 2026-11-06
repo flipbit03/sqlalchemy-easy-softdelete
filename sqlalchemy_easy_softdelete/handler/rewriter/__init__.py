@@ -443,17 +443,19 @@ class SoftDeleteQueryRewriter:
                     _NESTED_KEY.reset(key_token)
 
             def rewritten(clauses: Any) -> tuple[Any, ...]:
-                return tuple(visitors.replacement_traverse(clause, {}, replace) for clause in clauses)
+                return tuple(_replace_selects(clause, replace) for clause in clauses)
 
             new = stmt._generate()
             new._where_criteria = rewritten(stmt._where_criteria)
             if stmt._having_criteria:
                 listed = _listed_selects(stmt)
+
+                def replace_unlisted(element: Any, **kw: Any) -> Any:
+                    # One that is also in the columns or GROUP BY is left, with what is in it, to the criteria.
+                    return element if _is_listed(element, listed) else replace(element)
+
                 new._having_criteria = tuple(
-                    visitors.replacement_traverse(
-                        clause, {}, lambda element, **kw: None if _is_listed(element, listed) else replace(element)
-                    )
-                    for clause in stmt._having_criteria
+                    _replace_selects(clause, replace_unlisted) for clause in stmt._having_criteria
                 )
             joins = []
             for target, onclause, from_, flags in stmt._setup_joins:
@@ -462,7 +464,7 @@ class SoftDeleteQueryRewriter:
                     and not isinstance(onclause, QueryableAttribute)
                     and any(True for _ in _top_selects(onclause))
                 ):
-                    onclause = visitors.replacement_traverse(cast(Any, onclause), {}, replace)
+                    onclause = _replace_selects(onclause, replace)
                 joins.append((target, onclause, from_, flags))
             new._setup_joins = tuple(joins)
             return new
@@ -1465,7 +1467,51 @@ def _listed_selects(stmt: Select[Any]) -> list[Any]:
 def _is_listed(element: Any, listed: list[Any]) -> bool:
     """Whether ``element``, a SELECT of a HAVING clause, is the same expression as one of ``listed``: PostgreSQL
     matches HAVING to GROUP BY by expression, so they must render the same."""
-    return isinstance(element, (Select, CompoundSelect)) and any(element.compare(select) for select in listed)
+    if not isinstance(element, (Select, CompoundSelect)):
+        return False
+    for select in listed:
+        try:
+            if element.compare(select):
+                return True
+        except TypeError:
+            # SQLAlchemy before 2.0.32 cannot compare a SELECT with correlate_except() (any(), has()) to one
+            # without: they are not the same.
+            continue
+    return False
+
+
+_NO_REPLACEMENT = "no_replacement_traverse"
+
+
+def _replace_selects(clause: Any, replace: Callable[..., Any]) -> Any:
+    """``visitors.replacement_traverse(clause, {}, replace)``, which also goes into the criterion of ``any()`` and
+    ``has()``: SQLAlchemy annotates it so that replacement traversals leave it alone. A copy with its SELECTs
+    replaced keeps the annotation, for SQLAlchemy's own adaptation of the statement."""
+
+    def shielded(element: Any) -> bool:
+        return _NO_REPLACEMENT in element._annotations and any(True for _ in _top_selects(element))
+
+    def unshielded(element: Any) -> Any:
+        bare = element._deannotate(values=(_NO_REPLACEMENT,))
+        return _replace_selects(bare, replace)._annotate({_NO_REPLACEMENT: True})
+
+    def visit(element: Any, **kw: Any) -> Any:
+        new = replace(element, **kw)
+        if new is not None:
+            return new
+        if any(shielded(child) for child in element.get_children()):
+            # The criterion of any() and has() is in the condition of the EXISTS they make: in an and_(), or in
+            # parentheses. The element is copied as replacement_traverse copies one, with the criterion unshielded.
+            copy = element._clone()
+            copy._copy_internals(
+                clone=lambda child, **kw: unshielded(child) if shielded(child) else _replace_selects(child, replace)
+            )
+            return copy
+        return None
+
+    if shielded(clause):
+        return unshielded(clause)
+    return visitors.replacement_traverse(clause, {}, visit)
 
 
 def _column_property_selects(mappers: list[Mapper[Any]]) -> list[Any]:
