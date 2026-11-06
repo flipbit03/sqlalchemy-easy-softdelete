@@ -12,7 +12,7 @@ from datetime import datetime
 from typing import Any
 
 import pytest
-from sqlalchemy import Select, false, func, select, union_all
+from sqlalchemy import false, func, select, union_all
 from sqlalchemy.orm import (
     Bundle,
     Load,
@@ -552,7 +552,7 @@ def test_bundle_of_subquery_columns_is_filtered(seeded_session):
 
 def test_bundle_of_joined_subquery_columns_is_filtered(seeded_session):
     children = select(SDChild).subquery()
-    stmt: Select[Any] = select(Bundle("child", children.c.id)).join(SDParent, SDParent.id == children.c.parent_id)
+    stmt = select(Bundle("child", children.c.id)).join(SDParent, SDParent.id == children.c.parent_id)
 
     rows = seeded_session.execute(stmt).all()
 

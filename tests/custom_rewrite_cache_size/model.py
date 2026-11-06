@@ -24,10 +24,10 @@ class CRCSoftDeleteMixin(
 
 class CRCParent(CRCModelBase, CRCSoftDeleteMixin):
     __tablename__ = "crcparent"
-    children: Mapped[list["CRCChild"]] = relationship("CRCChild", back_populates="parent")
+    children: Mapped[list["CRCChild"]] = relationship("CRCChild", back_populates="parent")  # type: ignore[assignment]
 
 
 class CRCChild(CRCModelBase, CRCSoftDeleteMixin):
     __tablename__ = "crcchild"
     parent_id: Mapped[int] = mapped_column(Integer, ForeignKey("crcparent.id"), nullable=False)
-    parent: Mapped["CRCParent"] = relationship("CRCParent", back_populates="children")
+    parent: Mapped["CRCParent"] = relationship("CRCParent", back_populates="children")  # type: ignore[assignment]

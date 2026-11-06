@@ -1,7 +1,6 @@
 """A class mapped to a SELECT that outer joins a soft-deletable table, without the soft-delete columns."""
 
 from datetime import datetime
-from typing import TYPE_CHECKING
 
 from sqlalchemy import ForeignKey, Integer, select
 from sqlalchemy.orm import DeclarativeBase, Mapped, foreign, mapped_column, relationship
@@ -54,14 +53,8 @@ class OJChildNickname(OJModelBase):
     __table__ = child_nicknames
     __mapper_args__ = {"primary_key": [__table__.c.id]}
 
-    if TYPE_CHECKING:
-        # Mapped from __table__: declared for type checkers only.
-        id: Mapped[int]
-        parent_id: Mapped[int]
-        nickname_id: Mapped[int | None]
 
-
-OJParent.child_nicknames = relationship(
+OJParent.child_nicknames = relationship(  # type: ignore[attr-defined]
     OJChildNickname,
     primaryjoin=lambda: OJParent.id == foreign(child_nicknames.c.parent_id),
     viewonly=True,
@@ -69,7 +62,7 @@ OJParent.child_nicknames = relationship(
 )
 
 # The badges of each parent's children's nicknames, through the children with their nickname.
-OJParent.badges = relationship(
+OJParent.badges = relationship(  # type: ignore[attr-defined]
     OJBadge,
     secondary=child_nicknames,
     primaryjoin=lambda: OJParent.id == child_nicknames.c.parent_id,
