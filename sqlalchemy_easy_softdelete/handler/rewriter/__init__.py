@@ -41,7 +41,7 @@ from sqlalchemy.sql.visitors import InternalTraversal
 from sqlalchemy_easy_softdelete.hook import IgnoredTable
 
 # Type alias for statements we can rewrite
-Statement = Select | FromStatement | CompoundSelect | Executable | LambdaElement
+Statement = Select[Any] | FromStatement[Any] | CompoundSelect[Any] | Executable | LambdaElement
 
 _ENCLOSING_FROMS: contextvars.ContextVar[frozenset[int]] = contextvars.ContextVar(
     "enclosing_froms", default=frozenset()
@@ -367,7 +367,7 @@ class SoftDeleteQueryRewriter:
             rewritten.closure_cache_key = rewritten.closure_cache_key + (self._lambda_cache_token,)
         return rewritten
 
-    def rewrite_select(self, stmt: Select) -> Select:
+    def rewrite_select(self, stmt: Select[Any]) -> Select[Any]:
         """Rewrite a Select Statement."""
         # if the user tagged this query with an execution_option to disable soft-delete filtering
         # simply return back the same stmt
@@ -382,7 +382,7 @@ class SoftDeleteQueryRewriter:
             setattr(rewritten, _FILTERED_MARK, True)
         return rewritten
 
-    def rewrite_compound_select(self, stmt: CompoundSelect) -> CompoundSelect:
+    def rewrite_compound_select(self, stmt: CompoundSelect[Any]) -> CompoundSelect[Any]:
         """Rewrite a Compound Select Statement."""
         if self._is_disabled(stmt):
             return stmt
@@ -476,7 +476,7 @@ class SoftDeleteQueryRewriter:
         """Whether the statement disables soft-delete filtering with the configured execution option."""
         return bool(stmt.get_execution_options().get(self.disable_soft_delete_option_name))
 
-    def _with_criteria(self, stmt: Any, criteria: _Criteria, holds_selects: bool = True) -> Any:
+    def _with_criteria(self, stmt: Select[Any], criteria: _Criteria, holds_selects: bool = True) -> Select[Any]:
         """``stmt`` with ``with_loader_criteria`` options for ``criteria`` (``_SoftDeleteCriteria``, which leaves
         out the SELECTs that disable soft-delete filtering). ``holds_selects`` is whether ``stmt`` holds SELECTs,
         which are looked through for those."""

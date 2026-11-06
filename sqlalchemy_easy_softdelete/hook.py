@@ -8,6 +8,6 @@ class IgnoredTable:
     name: str
     table_schema: str | None = None
 
-    def match_name(self, table: Table):
+    def match_name(self, table: Table) -> bool:
         # Table matches if the name and schema match
         return self.name == table.name and self.table_schema == table.schema

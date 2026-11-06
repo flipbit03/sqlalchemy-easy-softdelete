@@ -1,6 +1,7 @@
 """Classes mapped to SELECTs of soft-deletable tables that leave out the soft-delete column."""
 
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from sqlalchemy import ForeignKey, Integer, select
 from sqlalchemy.orm import DeclarativeBase, Mapped, foreign, mapped_column, relationship
@@ -43,6 +44,12 @@ class PMChildName(PMModelBase):
     __table__ = child_name
     __mapper_args__ = {"primary_key": [__table__.c.id]}
 
+    if TYPE_CHECKING:
+        # Mapped from __table__: declared for type checkers only.
+        id: Mapped[int]
+        parent_id: Mapped[int]
+        parent: Mapped[PMParent]
+
 
 class PMChildWithParent(PMModelBase):
     """The children with their parents (a join of two soft-deletable tables), without a soft-delete column."""
@@ -51,18 +58,18 @@ class PMChildWithParent(PMModelBase):
     __mapper_args__ = {"primary_key": [__table__.c.id]}
 
 
-PMParent.child_names = relationship(  # type: ignore[attr-defined]
+PMParent.child_names = relationship(
     PMChildName,
     primaryjoin=lambda: PMParent.id == foreign(child_name.c.parent_id),
     viewonly=True,
     order_by=lambda: child_name.c.id,
 )
-PMParent.children_with_parent = relationship(  # type: ignore[attr-defined]
+PMParent.children_with_parent = relationship(
     PMChildWithParent,
     primaryjoin=lambda: PMParent.id == foreign(child_with_parent.c.parent_id),
     viewonly=True,
     order_by=lambda: child_with_parent.c.id,
 )
-PMChildName.parent = relationship(  # type: ignore[attr-defined]
+PMChildName.parent = relationship(
     PMParent, primaryjoin=lambda: PMParent.id == foreign(child_name.c.parent_id), viewonly=True
 )

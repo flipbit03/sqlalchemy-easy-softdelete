@@ -20,7 +20,7 @@ from tests.mapped_eager_relationships.model import (
 ACTIVE_CHILDREN = [(1, [1]), (2, [])]
 
 
-def _children(parents):  # type: ignore[no-untyped-def]
+def _children(parents):
     return [(parent.id, [child.id for child in parent.children]) for parent in parents]
 
 

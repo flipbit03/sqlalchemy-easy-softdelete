@@ -22,10 +22,10 @@ class CMNSoftDeleteMixin(
     deleted_at: Mapped[datetime | None]
 
     def soft_delete(self) -> None:
-        super().soft_delete()  # type: ignore[misc]
+        super().soft_delete()
 
     def restore(self) -> None:
-        super().restore()  # type: ignore[misc]
+        super().restore()
 
 
 class CMNTable(CMNModelBase, CMNSoftDeleteMixin):

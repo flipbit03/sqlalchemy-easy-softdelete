@@ -15,6 +15,7 @@ def test_delete_uses_custom_default_value(db_session):
 
     # Should use our custom date (2000-01-01)
     # SQLite doesn't preserve timezone, so compare without it
+    assert obj.deleted_at is not None
     assert obj.deleted_at.replace(tzinfo=None) == datetime(2000, 1, 1)
 
 
@@ -28,4 +29,5 @@ def test_delete_with_explicit_value_overrides_default(db_session):
     obj.delete(custom_date)
 
     # SQLite doesn't preserve timezone, so compare without it
+    assert obj.deleted_at is not None
     assert obj.deleted_at.replace(tzinfo=None) == custom_date.replace(tzinfo=None)

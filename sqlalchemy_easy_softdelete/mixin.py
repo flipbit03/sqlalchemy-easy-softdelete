@@ -18,7 +18,7 @@ def generate_soft_delete_mixin_class(
     deleted_field_name: str = "deleted_at",
     ignored_tables: list[IgnoredTable] | None = None,
     class_name: str = "_SoftDeleteMixin",
-    deleted_field_type: TypeEngine = DateTime(timezone=True),
+    deleted_field_type: TypeEngine[Any] = DateTime(timezone=True),
     disable_soft_delete_filtering_option_name: str = "include_deleted",
     generate_delete_method: bool = True,
     delete_method_name: str = "delete",
@@ -39,14 +39,14 @@ def generate_soft_delete_mixin_class(
 
     if generate_delete_method:
 
-        def delete_method(_self, v: Any | None = None):
+        def delete_method(_self: Any, v: Any | None = None) -> None:
             setattr(_self, deleted_field_name, v or delete_method_default_value())
 
         class_attributes[delete_method_name] = delete_method
 
     if generate_undelete_method:
 
-        def undelete_method(_self):
+        def undelete_method(_self: Any) -> None:
             setattr(_self, deleted_field_name, None)
 
         class_attributes[undelete_method_name] = undelete_method
