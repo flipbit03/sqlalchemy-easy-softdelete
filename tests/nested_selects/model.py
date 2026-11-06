@@ -41,8 +41,8 @@ def _children_count() -> Any:
     return select(func.count(NSChild.id)).where(NSChild.parent_id == NSParent.id).correlate_except(NSChild)
 
 
-NSParent.child_count = column_property(_children_count().scalar_subquery())
-NSParent.every_child_count = column_property(
+NSParent.child_count = column_property(_children_count().scalar_subquery())  # type: ignore[attr-defined]
+NSParent.every_child_count = column_property(  # type: ignore[attr-defined]
     _children_count().execution_options(include_deleted=True).scalar_subquery()
 )
-NSParent.deferred_child_count = deferred(_children_count().scalar_subquery())
+NSParent.deferred_child_count = deferred(_children_count().scalar_subquery())  # type: ignore[attr-defined]

@@ -21,7 +21,7 @@ from tests.joined_secondaries.model import JSEagerParent, JSItem, JSOwner, JSPar
 RELATIONSHIPS = pytest.mark.parametrize("attribute_name", ["tags", "tags_by_rows"])
 
 
-def _tag_ids(parent, attribute_name="tags"):
+def _tag_ids(parent, attribute_name="tags"):  # type: ignore[no-untyped-def]
     return [tag.id for tag in getattr(parent, attribute_name)]
 
 
