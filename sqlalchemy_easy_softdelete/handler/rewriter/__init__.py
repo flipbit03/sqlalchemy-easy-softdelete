@@ -43,6 +43,23 @@ from sqlalchemy_easy_softdelete.hook import IgnoredTable
 # Type alias for statements we can rewrite
 Statement = Select | FromStatement | CompoundSelect | Executable | LambdaElement
 
+_ENCLOSING_FROMS: contextvars.ContextVar[frozenset[int]] = contextvars.ContextVar(
+    "enclosing_froms", default=frozenset()
+)
+"""The ids of the FROM elements of the statement a SELECT being rewritten is nested in (a SELECT in a WHERE
+clause): the nested SELECT correlates to them, so they are filtered there, not in it."""
+
+_NESTED_KEY: contextvars.ContextVar[Any] = contextvars.ContextVar("nested_key", default=None)
+"""The key the plan of the nested SELECT being rewritten is remembered by: that of the statement it is nested in,
+and its place there, or None when that statement's plan is not remembered."""
+
+_FILTERED_MARK = "_soft_delete_filtered_"
+"""Set on a nested SELECT that the rewrite filtered (see ``rewrite_select``): ``_SoftDeleteCriteria`` leaves it out."""
+
+_COPY_MEMO: contextvars.ContextVar[dict[int, Any] | None] = contextvars.ContextVar("copy_memo", default=None)
+"""The filtered copies made for the statement a SELECT being rewritten is nested in, by the id of the subquery
+or CTE each replaces: the nested SELECT uses the same ones, so that a CTE renders once."""
+
 RELATIONSHIP_LOAD: contextvars.ContextVar[bool] = contextvars.ContextVar("relationship_load", default=False)
 """Whether the statement being rewritten loads a relationship (set by the hook from
 ``ORMExecuteState.is_relationship_load``). Such a statement selects its parent rows by primary key, from an
@@ -112,6 +129,22 @@ class _SelectPlan:
     secondary is a soft-deletable table, or a subquery of soft-deletable tables (see ``_soft_delete_condition``),
     by the position of the join: added to the join's ON clause with ``relationship.and_()``, since SQLAlchemy
     joins an alias of the secondary that it makes while compiling the statement."""
+
+    rewrites_nested: bool
+    """Whether the statement has SELECTs nested in its WHERE or HAVING clauses, or in the ON clauses of its joins
+    (EXISTS, IN, scalar subqueries, ``any()``, ``has()``), which are rewritten like statements of their own: they
+    correlate to the statement's own FROM elements. Those of its columns, ORDER BY and GROUP BY clauses, and those of
+    HAVING that are also there, are filtered by loader criteria instead (see ``_eager_loaded_entities``), so that the
+    same expression renders the same in all of them, and the statement's columns stay those SQLAlchemy keys result
+    rows by."""
+
+    many_froms: bool
+    """Whether the statement has more than one FROM element, with which SQLAlchemy auto-correlates it, nested in
+    another, to that one's FROM elements (see ``_correlated_froms``)."""
+
+    holds_selects: bool
+    """Whether the statement holds SELECTs anywhere (nested ones, subqueries, CTEs), which the loader criteria
+    look through for those that disable soft-delete filtering (see ``_disabled_selects``)."""
 
     secondary_options: tuple[Any, ...] | None
     """The loader options for the joined eager loads of the statement along relationships whose secondary is
@@ -245,6 +278,9 @@ class SoftDeleteQueryRewriter:
         self._plan_cache = _PlanCache(rewrite_cache_size) if rewrite_cache_size else None
         self._mapped_subquery_conditions: dict[type, Any] = {}
         self._secondary_conditions: dict[RelationshipProperty[Any], Any] = {}
+        # The SELECTs of each mapper's column_property() expressions that disable soft-delete filtering, with
+        # what is nested in them (see _disabled_selects): they belong to the mapping, the same for every statement.
+        self._disabled_column_property_selects: dict[Mapper[Any], frozenset[int]] = {}
 
     def rewrite_cache_info(self) -> RewriteCacheInfo:
         """Hits, misses and size of the rewrite cache, to help choose ``rewrite_cache_size``."""
@@ -338,14 +374,27 @@ class SoftDeleteQueryRewriter:
         if self._is_disabled(stmt):
             return stmt
 
-        plan, analysis = self._plan_for(stmt)
-        return self._apply_plan(stmt, plan, analysis)
+        plan, analysis, key = self._plan_for(stmt)
+        rewritten = self._apply_plan(stmt, plan, analysis, key)
+        if rewritten is not stmt and _ENCLOSING_FROMS.get():
+            # A nested SELECT, filtered here: the loader criteria leave it out, so that it renders as the same
+            # expression filtered by them does (in GROUP BY), not filtered twice.
+            setattr(rewritten, _FILTERED_MARK, True)
+        return rewritten
 
     def rewrite_compound_select(self, stmt: CompoundSelect) -> CompoundSelect:
         """Rewrite a Compound Select Statement."""
         if self._is_disabled(stmt):
             return stmt
-        selects: list[SelectBase] = [self._rewrite_compound_member(select) for select in stmt.selects]
+        selects: list[SelectBase] = []
+        nested_key = _NESTED_KEY.get() if _ENCLOSING_FROMS.get() else None
+        for place, select in enumerate(stmt.selects):
+            # Nested in a statement, the plan of each member is remembered by its own place in the union.
+            token = _NESTED_KEY.set((nested_key, "member", place) if nested_key is not None else None)
+            try:
+                selects.append(self._rewrite_compound_member(select))
+            finally:
+                _NESTED_KEY.reset(token)
         if all(new is old for new, old in zip(selects, stmt.selects)):
             return stmt
         rewritten = stmt._generate()
@@ -365,16 +414,75 @@ class SoftDeleteQueryRewriter:
             return member
         return self.rewrite_select(member)
 
+    def _rewrite_nested_selects(
+        self, stmt: Select[Any], memo: dict[int, Any], key: Any, many_froms: bool
+    ) -> Select[Any]:
+        """``stmt`` with the SELECTs nested in its WHERE and HAVING clauses and in the ON clauses of its joins
+        rewritten like statements of their own (see ``_SelectPlan.rewrites_nested``). One that disables soft-delete
+        filtering is left as it is. Each one's plan is remembered by ``key`` (``stmt``'s) and its place.
+        ``many_froms`` is whether ``stmt`` has more than one FROM element (see ``_SelectPlan.many_froms``)."""
+        froms = _from_ids(stmt)
+        enclosing = _ENCLOSING_FROMS.get()
+        if enclosing:
+            # Nested itself: the FROM elements it correlates to are not its own, for the SELECTs nested in it.
+            froms = froms - _correlated_froms(stmt, enclosing, many_froms)
+        token = _ENCLOSING_FROMS.set(froms)
+        memo_token = _COPY_MEMO.set(memo)
+        place = itertools.count()
+        try:
+
+            def replace(element: Any, **kw: Any) -> Any:
+                if not isinstance(element, (Select, CompoundSelect)):
+                    return None
+                key_token = _NESTED_KEY.set((key, "nested", next(place)) if key is not None else None)
+                try:
+                    if isinstance(element, CompoundSelect):
+                        return self.rewrite_compound_select(element)
+                    return self.rewrite_select(element)
+                finally:
+                    _NESTED_KEY.reset(key_token)
+
+            def rewritten(clauses: Any) -> tuple[Any, ...]:
+                return tuple(_replace_selects(clause, replace) for clause in clauses)
+
+            new = stmt._generate()
+            new._where_criteria = rewritten(stmt._where_criteria)
+            if stmt._having_criteria:
+                listed = _listed_selects(stmt)
+
+                def replace_unlisted(element: Any, **kw: Any) -> Any:
+                    # One that is also in the columns or GROUP BY is left, with what is in it, to the criteria.
+                    return element if _is_listed(element, listed) else replace(element)
+
+                new._having_criteria = tuple(
+                    _replace_selects(clause, replace_unlisted) for clause in stmt._having_criteria
+                )
+            joins = []
+            for target, onclause, from_, flags in stmt._setup_joins:
+                if (
+                    onclause is not None
+                    and not isinstance(onclause, QueryableAttribute)
+                    and any(True for _ in _top_selects(onclause))
+                ):
+                    onclause = _replace_selects(onclause, replace)
+                joins.append((target, onclause, from_, flags))
+            new._setup_joins = tuple(joins)
+            return new
+        finally:
+            _COPY_MEMO.reset(memo_token)
+            _ENCLOSING_FROMS.reset(token)
+
     def _is_disabled(self, stmt: Any) -> bool:
         """Whether the statement disables soft-delete filtering with the configured execution option."""
         return bool(stmt.get_execution_options().get(self.disable_soft_delete_option_name))
 
-    def _with_criteria(self, stmt: Any, criteria: _Criteria) -> Any:
+    def _with_criteria(self, stmt: Any, criteria: _Criteria, holds_selects: bool = True) -> Any:
         """``stmt`` with ``with_loader_criteria`` options for ``criteria`` (``_SoftDeleteCriteria``, which leaves
-        out the SELECTs that disable soft-delete filtering)."""
+        out the SELECTs that disable soft-delete filtering). ``holds_selects`` is whether ``stmt`` holds SELECTs,
+        which are looked through for those."""
         if not criteria:
             return stmt
-        disabled = self._disabled_from_selects(stmt)
+        disabled, signature = self._disabled_selects(stmt, holds_selects)
         options = []
         for entity, include_aliases in criteria.items():
             if hasattr(entity, self.deleted_field_name):
@@ -388,6 +496,7 @@ class SoftDeleteQueryRewriter:
                     include_aliases=include_aliases,
                     disable_option_name=self.disable_soft_delete_option_name,
                     disabled=disabled,
+                    disabled_signature=signature,
                     configuration=configuration,
                 )
             )
@@ -398,50 +507,65 @@ class SoftDeleteQueryRewriter:
         ignored = tuple((table.name, table.table_schema) for table in self.ignored_tables)
         return (self.deleted_field_name, self.disable_soft_delete_option_name, ignored)
 
-    def _disabled_from_selects(self, stmt: Any) -> frozenset[int]:
+    def _disabled_selects(self, stmt: Any, holds_selects: bool = True) -> tuple[frozenset[int], tuple[int, ...]]:
         """The ids of the SELECTs the eager loading criteria leave out (see ``_SoftDeleteCriteria``): those of
-        the subqueries in the FROM clause of ``stmt``, or in that of the subqueries in it, at any depth, that
-        disable soft-delete filtering, with what is nested in them, and the SELECTs they are clones of."""
+        ``stmt`` that disable soft-delete filtering, anywhere in it, with what is nested in them and the SELECTs
+        they are clones of, and those of the column_property() expressions of the classes it loads; and where in
+        ``stmt`` the former are, among its SELECTs, which tells statements of the same shape apart."""
         disabled: set[int] = set()
-        self._collect_disabled_from_selects(stmt, disabled, set())
-        return frozenset(disabled)
+        places: list[int] = []
+        if holds_selects:
+            selects = (element for element in visitors.iterate(stmt) if isinstance(element, (Select, CompoundSelect)))
+            for place, select in enumerate(selects):
+                if select is not stmt and id(select) not in disabled and self._is_disabled(select):
+                    places.append(place)
+                    _add_selects(select, disabled)
+        if isinstance(stmt, Select):
+            # Those of column_property() expressions belong to the mapping, the same for every statement.
+            mappers = [
+                insp.mapper
+                for insp in (
+                    _annotated_entity(column) for column in stmt._raw_columns if isinstance(column, FromClause)
+                )
+                if isinstance(insp, (Mapper, AliasedInsp))
+            ]
+            for mapper in mappers:
+                disabled.update(self._disabled_selects_of(mapper))
+        return frozenset(disabled), tuple(places)
 
-    def _collect_disabled_from_selects(self, stmt: Any, disabled: set[int], seen: set[int]) -> None:
-        if isinstance(stmt, CompoundSelect):
-            for member in stmt.selects:
-                self._collect_disabled_from_selects(member, disabled, seen)
-            return
-        if not isinstance(stmt, Select):
-            return
-        for from_obj in _FromScan(stmt).subqueries.values():
-            subquery = _subquery_in(from_obj)
-            # A recursive CTE is in the FROM clause of its own statement.
-            if subquery is None or id(subquery) in seen:
-                continue
-            seen.add(id(subquery))
-            if not self._is_disabled(subquery.element):
-                self._collect_disabled_from_selects(subquery.element, disabled, seen)
-                continue
-            for element in visitors.iterate(subquery.element):
-                if isinstance(element, (Select, CompoundSelect)):
-                    disabled.add(id(element))
-                    if element._is_clone_of is not None:
-                        disabled.add(id(element._is_clone_of))
+    def _disabled_selects_of(self, mapper: Mapper[Any]) -> frozenset[int]:
+        """The ids of the SELECTs of ``mapper``'s column_property() expressions that disable soft-delete filtering,
+        with what is nested in them."""
+        found = self._disabled_column_property_selects.get(mapper)
+        if found is None:
+            selects: set[int] = set()
+            for select in _column_property_selects([mapper]):
+                if self._is_disabled(select):
+                    _add_selects(select, selects)
+            found = self._disabled_column_property_selects.setdefault(mapper, frozenset(selects))
+        return found
 
-    def _plan_for(self, stmt: Select[Any]) -> tuple[_SelectPlan, _FromAnalysis | None]:
+    def _plan_for(self, stmt: Select[Any]) -> tuple[_SelectPlan, _FromAnalysis | None, Any]:
         """The plan for ``stmt``, a remembered one for its shape or a new one, and, for a new one, what
-        the analysis of its FROM clause found.
+        the analysis of its FROM clause found; and the key it is remembered by, if any.
         """
         # Inside a CTE's own statement, the plan depends on which CTE is being rewritten, which cache keys
         # leave out (its references to itself are left as they are).
         cache = self._plan_cache if not _CTES_IN_REWRITE.get() else None
-        cache_key = stmt._generate_cache_key() if cache is not None else None
-        # A relationship load's plan leaves out aliases of tables (see RELATIONSHIP_LOAD).
-        key = (RELATIONSHIP_LOAD.get(), cache_key.key) if cache_key is not None else None
+        key: Any = None
+        if cache is not None:
+            if _ENCLOSING_FROMS.get():
+                # A nested SELECT's plan depends on what it correlates to: it is remembered by the key of the
+                # statement it is nested in and its place there (see _rewrite_nested_selects).
+                key = _NESTED_KEY.get()
+            else:
+                cache_key = stmt._generate_cache_key()
+                # A relationship load's plan leaves out aliases of tables (see RELATIONSHIP_LOAD).
+                key = (RELATIONSHIP_LOAD.get(), cache_key.key) if cache_key is not None else None
         if cache is not None and key is not None:
             plan = cache.get(key)
             if plan is not None:
-                return plan, None
+                return plan, None, key
 
         plan, analysis = self._plan_select(stmt)
         if cache is not None:
@@ -449,7 +573,7 @@ class SoftDeleteQueryRewriter:
                 cache.put(key, plan)
             else:
                 cache.count_uncacheable()
-        return plan, analysis
+        return plan, analysis, key if plan.reusable else None
 
     def _plan_select(self, stmt: Select[Any]) -> tuple[_SelectPlan, _FromAnalysis]:
         """Work out what the soft-delete rewrite adds to ``stmt``, and the subqueries of its FROM clause
@@ -458,7 +582,21 @@ class SoftDeleteQueryRewriter:
         columns: list[Column[Any]] = []
         from_subqueries: list[FromClause] = []
         from_aliases: list[Alias] = []
-        final_froms = _final_froms_without_loader_options(stmt)
+        enclosing = _ENCLOSING_FROMS.get()
+        try:
+            final_froms = _final_froms_without_loader_options(stmt)
+        except sqlalchemy.exc.InvalidRequestError:
+            # A nested SELECT, on its own: one nested in its criteria may correlate to all of its FROM elements,
+            # which SQLAlchemy 2.1 refuses there. Its FROM elements are those without its criteria, and theirs.
+            if not enclosing:
+                raise
+            final_froms = _froms_without_criteria(stmt)
+        many_froms = len(final_froms) > 1
+        if enclosing:
+            correlated_ids = _correlated_froms(stmt, enclosing, many_froms)
+            final_froms = [
+                from_obj for from_obj in final_froms if id(_plain(_ungrouped(from_obj))) not in correlated_ids
+            ]
         for from_obj in final_froms:
             self._collect_from(from_obj, columns, from_subqueries, from_aliases)
 
@@ -472,6 +610,11 @@ class SoftDeleteQueryRewriter:
         in_rewrite = _CTES_IN_REWRITE.get()
         for from_obj in from_subqueries:
             plain = _plain(from_obj)
+            if enclosing and _cte_lineage(_subquery_in(plain)) & enclosing:
+                # A CTE of an enclosing statement (or an alias of one), in a nested SELECT: the enclosing statement's
+                # filtered copy restates it, and SQLAlchemy renders that copy once for every reference.
+                reusable = False
+                continue
             if in_rewrite and id(_cte_root(_subquery_in(plain))) in in_rewrite:
                 # A recursive CTE's reference to itself, inside its own statement: left as it is.
                 reusable = False
@@ -533,6 +676,12 @@ class SoftDeleteQueryRewriter:
             tuple(entities.items()),
             rewrites_subqueries=bool(subqueries),
             secondary_criteria=self._secondary_criteria(stmt),
+            rewrites_nested=any(True for _ in _nested_selects(stmt)),
+            many_froms=many_froms,
+            holds_selects=any(
+                element is not stmt and isinstance(element, (Select, CompoundSelect))
+                for element in visitors.iterate(stmt)
+            ),
             secondary_options=_reusable_options(*self._joined_secondary_options(stmt)),
             outer_joins=outer_joins,
             filters_table_aliases=bool(table_aliases),
@@ -595,7 +744,9 @@ class SoftDeleteQueryRewriter:
         passed_on = column is not None and insp.selectable.corresponding_column(column) is not None
         return passed_on and self._filtered_mappers_in(subquery.element)[1]
 
-    def _apply_plan(self, stmt: Select[Any], plan: _SelectPlan, analysis: _FromAnalysis | None) -> Select[Any]:
+    def _apply_plan(
+        self, stmt: Select[Any], plan: _SelectPlan, analysis: _FromAnalysis | None, key: Any = None
+    ) -> Select[Any]:
         """Return a copy of ``stmt`` with ``plan`` applied.
 
         ``analysis`` holds what the analysis of the FROM clause found when it was just analyzed;
@@ -608,8 +759,9 @@ class SoftDeleteQueryRewriter:
                 aliases = []
             analysis = _FromAnalysis(list(scan.subqueries.values()), {}, aliases)
         copies: dict[int, FromClause] = {}
+        inherited = _COPY_MEMO.get()
+        memo: dict[int, FromClause | None] = inherited if inherited is not None else {}
         if plan.rewrites_subqueries and analysis is not None:
-            memo: dict[int, FromClause | None] = {}
             for from_obj in analysis.subqueries:
                 copy = self._filtered_copy(from_obj, memo)
                 if copy is not None:
@@ -617,13 +769,16 @@ class SoftDeleteQueryRewriter:
             if copies:
                 stmt = _place_copies(stmt, copies, analysis.join_lefts)
 
+        if plan.rewrites_nested:
+            stmt = self._rewrite_nested_selects(stmt, memo, key, plan.many_froms)
+
         secondary_options = plan.secondary_options
         if secondary_options is None:
             secondary_options = tuple(self._joined_secondary_options(stmt)[0])
         if secondary_options:
             stmt = stmt.options(*secondary_options)
 
-        stmt = self._with_criteria(stmt, dict(plan.criteria_entities))
+        stmt = self._with_criteria(stmt, dict(plan.criteria_entities), plan.holds_selects)
 
         if plan.secondary_criteria:
             stmt = _with_secondary_criteria(stmt, plan.secondary_criteria)
@@ -681,12 +836,12 @@ class SoftDeleteQueryRewriter:
                     restated.add(id(cte))
                 cte_token = _CTES_IN_REWRITE.set(_CTES_IN_REWRITE.get() | restated)
                 try:
-                    inner = self._rewrite_subquery_element(element)
+                    inner = self._rewrite_unnested(element)
                 finally:
                     _CTES_IN_REWRITE.reset(cte_token)
                 unchanged = inner is element
             elif isinstance(from_obj, Subquery):
-                inner = self._rewrite_subquery_element(element)
+                inner = self._rewrite_unnested(element)
                 unchanged = inner is element
             else:
                 # An alias of a subquery (an alias of an aliased() entity, or of a subquery's alias, or LATERAL)
@@ -705,6 +860,17 @@ class SoftDeleteQueryRewriter:
                 filtered._restates = cast(CTE, from_obj)
             memo[key] = filtered
         return memo[key]
+
+    def _rewrite_unnested(self, element: Any) -> Any:
+        """Rewrite the statement of a subquery or CTE of a FROM clause: it correlates to nothing, and makes copies
+        of its own."""
+        token = _ENCLOSING_FROMS.set(frozenset())
+        memo_token = _COPY_MEMO.set(None)
+        try:
+            return self._rewrite_subquery_element(element)
+        finally:
+            _COPY_MEMO.reset(memo_token)
+            _ENCLOSING_FROMS.reset(token)
 
     def _collect_from(
         self, from_obj: Any, columns: list[Column[Any]], subqueries: list[FromClause], aliases: list[Alias]
@@ -1137,6 +1303,19 @@ class SoftDeleteQueryRewriter:
             target = entity.mapper.class_
             if self._is_soft_deletable_entity(target) or self._mapped_subquery_condition(target) is not None:
                 entities.setdefault(target, None)
+
+        # SELECTs nested in the statement's columns, ORDER BY and GROUP BY clauses, or in the column_property()
+        # expressions of the classes it loads, are filtered by criteria for the classes they select from: SQLAlchemy
+        # keys result rows by the statement's columns, which the rewrite keeps, and PostgreSQL matches ORDER BY and
+        # HAVING to them (or to GROUP BY) by expression, so a SELECT of HAVING that is also there is left to the
+        # same criteria (see _rewrite_nested_selects). One that disables filtering is left out by the criteria (see
+        # _SoftDeleteCriteria).
+        column_selects = _listed_selects(stmt)
+        mappers = loaded + [entity.mapper for entity in joined_targets]
+        for select in column_selects + _column_property_selects(mappers):
+            for mapper in _mappers_in(select):
+                if self._is_soft_deletable_entity(mapper.class_):
+                    entities.setdefault(mapper.class_, None)
         return list(entities), reusable, mapped_aliases
 
     def _is_soft_deletable_entity(self, entity_class: type) -> bool:
@@ -1209,6 +1388,200 @@ def _mapping_reach(mappers: list[Mapper[Any]]) -> tuple[list[Any], list[AliasedI
                     joined.setdefault(id(entity), entity)
                 eager.append((prop.mapper, by_join))
     return list(joined.values()), list(aliases.values())
+
+
+def _cte_lineage(selectable: Any) -> set[int]:
+    """The ids of a CTE, of the CTE it is an alias of, and of those they restate or are clones of; empty for
+    anything that is not a CTE."""
+    found: set[int] = set()
+    stack: list[Any] = [selectable] if isinstance(selectable, CTE) else []
+    while stack:
+        cte = stack.pop()
+        if cte is None or id(cte) in found:
+            continue
+        found.add(id(cte))
+        stack.extend((cte._cte_alias, cte._restates, getattr(cte, "_is_clone_of", None)))
+    return found
+
+
+def _mappers_in(element: Any) -> list[Mapper[Any]]:
+    """The mappers whose tables ``element`` selects from, through their entities or columns."""
+    found: dict[Mapper[Any], None] = {}
+    for child in visitors.iterate(element):
+        mapper = getattr(child, "_annotations", {}).get("parentmapper")
+        if isinstance(mapper, Mapper) and _selects_from_mapper(child, mapper):
+            found.setdefault(mapper, None)
+    return list(found)
+
+
+def _add_selects(element: Any, disabled: set[int]) -> None:
+    """Add to ``disabled`` the ids of the SELECTs in ``element``, and of those they are clones of."""
+    for child in visitors.iterate(element):
+        if isinstance(child, (Select, CompoundSelect)):
+            disabled.add(id(child))
+            if child._is_clone_of is not None:
+                disabled.add(id(child._is_clone_of))
+
+
+def _top_selects(clause: Any) -> Any:
+    """The SELECTs in ``clause`` that are not nested in another SELECT of it."""
+    stack = [clause]
+    while stack:
+        element = stack.pop()
+        if isinstance(element, (Select, CompoundSelect)):
+            yield element
+            continue
+        stack.extend(element.get_children())
+
+
+def _nested_selects(stmt: Select[Any]) -> Any:
+    """The SELECTs nested in the WHERE and HAVING clauses of ``stmt`` and in the ON clauses of its joins (see
+    ``_SelectPlan.rewrites_nested``), but not those of HAVING that are also in its columns, ORDER BY or GROUP BY
+    clauses (see ``_listed_selects``)."""
+    clauses: list[Any] = [*stmt._where_criteria]
+    if stmt._having_criteria:
+        listed = _listed_selects(stmt)
+        for clause in stmt._having_criteria:
+            yield from (select for select in _top_selects(clause) if not _is_listed(select, listed))
+    clauses += [
+        onclause
+        for _target, onclause, _from, _flags in stmt._setup_joins
+        if onclause is not None and not isinstance(onclause, QueryableAttribute)
+    ]
+    for clause in clauses:
+        yield from _top_selects(clause)
+
+
+def _listed_selects(stmt: Select[Any]) -> list[Any]:
+    """The SELECTs nested in the columns, ORDER BY and GROUP BY clauses of ``stmt``, which loader criteria filter
+    (see ``_SelectPlan.rewrites_nested``)."""
+    # A column that is a FROM element is an entity; its SELECT is its own FROM clause.
+    clauses = [
+        *(column for column in stmt._raw_columns if not isinstance(column, FromClause)),
+        *stmt._order_by_clauses,
+        *stmt._group_by_clauses,
+    ]
+    return [select for clause in clauses for select in _top_selects(clause)]
+
+
+def _is_listed(element: Any, listed: list[Any]) -> bool:
+    """Whether ``element``, a SELECT of a HAVING clause, is the same expression as one of ``listed``: PostgreSQL
+    matches HAVING to GROUP BY by expression, so they must render the same."""
+    if not isinstance(element, (Select, CompoundSelect)):
+        return False
+    for select in listed:
+        try:
+            if element.compare(select):
+                return True
+        except TypeError:
+            # SQLAlchemy before 2.0.32 cannot compare a SELECT with correlate_except() (any(), has()) to one
+            # without: they are not the same.
+            continue
+    return False
+
+
+_NO_REPLACEMENT = "no_replacement_traverse"
+
+
+def _replace_selects(clause: Any, replace: Callable[..., Any]) -> Any:
+    """``visitors.replacement_traverse(clause, {}, replace)``, which also goes into the criterion of ``any()`` and
+    ``has()``: SQLAlchemy annotates it so that replacement traversals leave it alone. A copy with its SELECTs
+    replaced keeps the annotation, for SQLAlchemy's own adaptation of the statement."""
+
+    def shielded(element: Any) -> bool:
+        return _NO_REPLACEMENT in element._annotations and any(True for _ in _top_selects(element))
+
+    def unshielded(element: Any) -> Any:
+        bare = element._deannotate(values=(_NO_REPLACEMENT,))
+        return _replace_selects(bare, replace)._annotate({_NO_REPLACEMENT: True})
+
+    def visit(element: Any, **kw: Any) -> Any:
+        new = replace(element, **kw)
+        if new is not None:
+            return new
+        if any(shielded(child) for child in element.get_children()):
+            # The criterion of any() and has() is in the condition of the EXISTS they make: in an and_(), or in
+            # parentheses. The element is copied as replacement_traverse copies one, with the criterion unshielded.
+            copy = element._clone()
+            copy._copy_internals(
+                clone=lambda child, **kw: unshielded(child) if shielded(child) else _replace_selects(child, replace)
+            )
+            return copy
+        return None
+
+    if shielded(clause):
+        return unshielded(clause)
+    return visitors.replacement_traverse(clause, {}, visit)
+
+
+def _column_property_selects(mappers: list[Mapper[Any]]) -> list[Any]:
+    """The SELECTs in the ``column_property()`` expressions of ``mappers`` and of their subclasses."""
+    found: dict[int, Any] = {}
+    for mapper in mappers:
+        for each in mapper.self_and_descendants:
+            for prop in each.column_attrs:
+                for column in prop.columns:
+                    for select in _top_selects(column):
+                        found.setdefault(id(select), select)
+    return list(found.values())
+
+
+def _from_ids(stmt: Select[Any]) -> frozenset[int]:
+    """The ids of the FROM elements of ``stmt`` that a SELECT nested in it may correlate to: those of its FROM list,
+    its joins and its columns and criteria, and the tables and subqueries of the joins among them."""
+    found: set[int] = set()
+
+    def add(from_obj: Any) -> None:
+        if from_obj is None:
+            return
+        for leaf in _join_leaves(_ungrouped(from_obj)):
+            # A filtered copy stands for what it is a clone of, or restates (a CTE): the nested SELECT may still
+            # refer to that.
+            stack = [_plain(leaf)]
+            while stack:
+                element = stack.pop()
+                if element is None or id(element) in found:
+                    continue
+                found.add(id(element))
+                stack.append(getattr(element, "_is_clone_of", None))
+                stack.append(getattr(element, "_restates", None))
+
+    for from_obj in stmt._from_obj:
+        add(from_obj)
+    for target, _onclause, from_, _flags in _joins_of(stmt):
+        add(_join_target_selectable(target) if not isinstance(target, FromClause) else target)
+        add(from_)
+    for element in (*stmt._raw_columns, *stmt._where_criteria):
+        for from_obj in element._from_objects:
+            add(from_obj)
+    return frozenset(found)
+
+
+def _froms_without_criteria(stmt: Select[Any]) -> list[Any]:
+    """The FROM elements of ``stmt``: those SQLAlchemy finds for it without its WHERE and HAVING criteria, and
+    those of the criteria that are not among them."""
+    bare = stmt._generate()
+    bare._where_criteria = ()
+    bare._having_criteria = ()
+    froms = list(_final_froms_without_loader_options(bare))
+    seen = {id(_plain(leaf)) for from_obj in froms for leaf in _join_leaves(_ungrouped(from_obj))}
+    for criterion in (*stmt._where_criteria, *stmt._having_criteria):
+        for from_obj in criterion._from_objects:
+            if id(_plain(from_obj)) not in seen:
+                seen.add(id(_plain(from_obj)))
+                froms.append(_plain(from_obj))
+    return froms
+
+
+def _correlated_froms(stmt: Select[Any], enclosing: frozenset[int], many_froms: bool) -> set[int]:
+    """The ids of the FROM elements of the enclosing statement that ``stmt``, a nested SELECT, correlates to, as
+    SQLAlchemy does: those of ``correlate()``, all but those of ``correlate_except()``, or else all of them, when
+    ``stmt`` has more than one FROM element (``many_froms``; one that has only one selects from it again)."""
+    if stmt._correlate:
+        return {id(_plain(from_obj)) for from_obj in stmt._correlate} & enclosing
+    if stmt._correlate_except is not None:
+        return set(enclosing) - {id(_plain(from_obj)) for from_obj in stmt._correlate_except}
+    return set(enclosing) if stmt._auto_correlate and many_froms else set()
 
 
 def _reusable_options(options: list[Any], statement_specific: bool) -> tuple[Any, ...] | None:
@@ -1906,21 +2279,20 @@ _criteria_functions: dict[str, Callable[[Any], Any]] = {}
 
 
 class _SoftDeleteCriteria(LoaderCriteriaOption):
-    """``with_loader_criteria()`` for the soft-delete filter of eager loading, which SQLAlchemy applies to every
-    SELECT of the class compiled with the statement. It leaves out the SELECTs in ``disabled`` (by id): the
-    statements of subqueries in the FROM clause (subqueries, CTEs, LATERAL subqueries), or in that of a
-    subquery in it, that disable soft-delete filtering, and the SELECTs nested in them, such as a subquery that
-    counts soft-deleted rows on purpose.
+    """``with_loader_criteria()`` for the soft-delete filter of eager loading and of nested SELECTs, which
+    SQLAlchemy applies to every SELECT of the class compiled with the statement. It leaves out the SELECTs in
+    ``disabled`` (by id): those that disable soft-delete filtering, anywhere in the statement, and the SELECTs
+    nested in them, such as a subquery that counts soft-deleted rows on purpose.
 
-    Only those: a statement of the same shape without the option gets a filtered copy of such a subquery,
-    so the two have different cache keys and never share compiled SQL. A SELECT nested elsewhere (a scalar
-    subquery) is not copied, and its execution options are left out of cache keys: it stays filtered.
-    ``disabled`` holds objects of one statement and is not part of the cache key.
+    ``disabled`` holds objects of one statement, which cache keys leave out, and so do the SELECTs' execution
+    options. ``disabled_signature``, where those SELECTs are among the statement's, is part of the cache key: two
+    statements of the same shape that disable filtering in different SELECTs never share compiled SQL.
     """
 
     _traverse_internals = [
         *LoaderCriteriaOption._traverse_internals,
         ("disable_option_name", InternalTraversal.dp_string),
+        ("disabled_signature", InternalTraversal.dp_plain_obj),
     ]
 
     def __init__(
@@ -1931,22 +2303,28 @@ class _SoftDeleteCriteria(LoaderCriteriaOption):
         include_aliases: bool,
         disable_option_name: str,
         disabled: frozenset[int] = frozenset(),
+        disabled_signature: tuple[int, ...] = (),
         configuration: tuple[str, str, tuple[tuple[str, str | None], ...]] | None = None,
     ) -> None:
         super().__init__(entity, where_criteria, include_aliases=include_aliases)
         self.disable_option_name = disable_option_name
         self.disabled = disabled
+        self.disabled_signature = disabled_signature
         self.configuration = configuration
 
     def _should_include(self, compile_state: Any) -> bool:
         # SQLAlchemy compiles a copy of a SELECT nested in the statement, which refers to the SELECT it copies
-        # (or the first of its clones) through _is_clone_of.
-        if self.disabled:
-            statement = compile_state.select_statement
-            while statement is not None:
-                if id(statement) in self.disabled:
-                    return False
-                statement = getattr(statement, "_is_clone_of", None)
+        # (or the first of its clones) through _is_clone_of. A SELECT that disables filtering itself, such as a
+        # column_property()'s of a class loaded through a relationship, is left out wherever it is compiled.
+        statement = compile_state.select_statement
+        while statement is not None:
+            if (
+                id(statement) in self.disabled
+                or getattr(statement, _FILTERED_MARK, False)
+                or statement._execution_options.get(self.disable_option_name)
+            ):
+                return False
+            statement = getattr(statement, "_is_clone_of", None)
         return bool(super()._should_include(compile_state))
 
     def __reduce__(self) -> Any:
