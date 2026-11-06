@@ -5,8 +5,8 @@ them. One that sets include_deleted keeps them."""
 from typing import Any
 
 import pytest
-from sqlalchemy import exists, func, lambda_stmt, select
-from sqlalchemy.orm import aliased, joinedload, undefer
+from sqlalchemy import exists, func, lambda_stmt, select, union
+from sqlalchemy.orm import aliased, joinedload, selectinload, undefer
 
 from tests.nested_selects.model import NSChild, NSOwner, NSParent
 
@@ -157,13 +157,16 @@ def test_deferred_column_property(db_session, undeferred):
 
 
 def test_column_property_of_an_eager_or_lazy_loaded_class(db_session):
-    owner = (
-        db_session.scalars(select(NSOwner).where(NSOwner.id == 1).options(joinedload(NSOwner.parent))).unique().one()
-    )
-    assert owner.parent.child_count == 1
+    """Including the column_property() that sets include_deleted."""
+    for loader in (joinedload, selectinload):
+        owner = (
+            db_session.scalars(select(NSOwner).where(NSOwner.id == 1).options(loader(NSOwner.parent))).unique().one()
+        )
+        assert (owner.parent.child_count, owner.parent.every_child_count) == (1, 2)
+        db_session.expunge_all()
 
-    db_session.expunge_all()
-    assert db_session.get(NSOwner, 1).parent.child_count == 1
+    parent = db_session.get(NSOwner, 1).parent
+    assert (parent.child_count, parent.every_child_count) == (1, 2)
 
 
 def test_select_nested_in_the_columns_and_the_group_by_clause(db_session):
@@ -242,3 +245,36 @@ def test_select_with_a_join_nested_in_a_nested_select(db_session):
     )
 
     assert _ids(db_session, select(NSParent.id).where(exists(middle))) == [1]
+
+
+def test_union_nested_in_the_where_clause(db_session):
+    """Each SELECT of the union filters its own table. Parent 2's only child is soft-deleted, owner 1's parent is 1."""
+    children = select(NSChild.parent_id).where(NSChild.parent_id == 2)
+    owners = select(NSOwner.parent_id).where(NSOwner.id == 1)
+
+    assert _ids(db_session, select(NSParent.id).where(NSParent.id.in_(union(children, owners)))) == [1]
+    assert _ids(db_session, select(NSParent.id).where(NSParent.id.in_(union(owners, children)))) == [1]
+
+
+def test_select_nested_in_the_group_by_and_having_clauses(db_session):
+    """PostgreSQL matches HAVING to GROUP BY by expression."""
+    count = _children_count()
+    by_count = select(count, func.count(NSParent.id)).group_by(count).having(count > 0)
+    by_column_property = (
+        select(NSParent.child_count, func.count(NSParent.id))
+        .group_by(NSParent.child_count)
+        .having(NSParent.child_count > 0)
+    )
+
+    assert db_session.execute(by_count).all() == [(1, 1)]
+    assert db_session.execute(by_column_property).all() == [(1, 1)]
+
+
+def test_select_nested_in_a_nested_select_that_correlates_away_the_table(db_session):
+    """The innermost SELECT does not correlate to the parents of the statement two levels up, which the one
+    around it correlates to: it selects from them again. Child 4 is active, but its parent is soft-deleted."""
+    for child_id, expected in ((4, []), (1, [1, 2])):
+        innermost = exists(select(NSChild.id).where(NSChild.parent_id == NSParent.id, NSChild.id == child_id))
+        owners = select(NSOwner.id).where(NSOwner.parent_id == NSParent.id, innermost)
+
+        assert _ids(db_session, select(NSParent.id).where(exists(owners))) == expected
