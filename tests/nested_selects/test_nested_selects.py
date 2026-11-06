@@ -278,3 +278,11 @@ def test_select_nested_in_a_nested_select_that_correlates_away_the_table(db_sess
         owners = select(NSOwner.id).where(NSOwner.parent_id == NSParent.id, innermost)
 
         assert _ids(db_session, select(NSParent.id).where(exists(owners))) == expected
+
+
+@pytest.mark.parametrize(
+    "make_clause", [WHERE_CLAUSES["any"], WHERE_CLAUSES["core_exists"]], ids=["any", "core_exists"]
+)
+def test_select_nested_in_the_having_clause_only(db_session, make_clause):
+    """One that is not also in the columns or GROUP BY clause is filtered like one of the WHERE clause."""
+    assert _ids(db_session, select(NSParent.id).group_by(NSParent.id).having(make_clause())) == [1]

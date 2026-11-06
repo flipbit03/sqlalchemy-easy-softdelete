@@ -133,9 +133,10 @@ class _SelectPlan:
     rewrites_nested: bool
     """Whether the statement has SELECTs nested in its WHERE or HAVING clauses, or in the ON clauses of its joins
     (EXISTS, IN, scalar subqueries, ``any()``, ``has()``), which are rewritten like statements of their own: they
-    correlate to the statement's own FROM elements. Those of its columns, ORDER BY and GROUP BY clauses are
-    filtered by loader criteria instead (see ``_eager_loaded_entities``), so that the same expression renders the
-    same there, and the statement's columns stay those SQLAlchemy keys result rows by."""
+    correlate to the statement's own FROM elements. Those of its columns, ORDER BY and GROUP BY clauses, and those of
+    HAVING that are also there, are filtered by loader criteria instead (see ``_eager_loaded_entities``), so that the
+    same expression renders the same in all of them, and the statement's columns stay those SQLAlchemy keys result
+    rows by."""
 
     many_froms: bool
     """Whether the statement has more than one FROM element, with which SQLAlchemy auto-correlates it, nested in
@@ -446,7 +447,14 @@ class SoftDeleteQueryRewriter:
 
             new = stmt._generate()
             new._where_criteria = rewritten(stmt._where_criteria)
-            new._having_criteria = rewritten(stmt._having_criteria)
+            if stmt._having_criteria:
+                listed = _listed_selects(stmt)
+                new._having_criteria = tuple(
+                    visitors.replacement_traverse(
+                        clause, {}, lambda element, **kw: None if _is_listed(element, listed) else replace(element)
+                    )
+                    for clause in stmt._having_criteria
+                )
             joins = []
             for target, onclause, from_, flags in stmt._setup_joins:
                 if (
@@ -1296,15 +1304,11 @@ class SoftDeleteQueryRewriter:
 
         # SELECTs nested in the statement's columns, ORDER BY and GROUP BY clauses, or in the column_property()
         # expressions of the classes it loads, are filtered by criteria for the classes they select from: SQLAlchemy
-        # keys result rows by the statement's columns, which the rewrite keeps. One that disables filtering is left
-        # out by the criteria (see _SoftDeleteCriteria).
-        # A column that is a FROM element is an entity; its SELECT is its own FROM clause.
-        clauses = [
-            *(column for column in stmt._raw_columns if not isinstance(column, FromClause)),
-            *stmt._order_by_clauses,
-            *stmt._group_by_clauses,
-        ]
-        column_selects = [select for clause in clauses for select in _top_selects(clause)]
+        # keys result rows by the statement's columns, which the rewrite keeps, and PostgreSQL matches ORDER BY and
+        # HAVING to them (or to GROUP BY) by expression, so a SELECT of HAVING that is also there is left to the
+        # same criteria (see _rewrite_nested_selects). One that disables filtering is left out by the criteria (see
+        # _SoftDeleteCriteria).
+        column_selects = _listed_selects(stmt)
         mappers = loaded + [entity.mapper for entity in joined_targets]
         for select in column_selects + _column_property_selects(mappers):
             for mapper in _mappers_in(select):
@@ -1430,8 +1434,13 @@ def _top_selects(clause: Any) -> Any:
 
 def _nested_selects(stmt: Select[Any]) -> Any:
     """The SELECTs nested in the WHERE and HAVING clauses of ``stmt`` and in the ON clauses of its joins (see
-    ``_SelectPlan.rewrites_nested``)."""
-    clauses: list[Any] = [*stmt._where_criteria, *stmt._having_criteria]
+    ``_SelectPlan.rewrites_nested``), but not those of HAVING that are also in its columns, ORDER BY or GROUP BY
+    clauses (see ``_listed_selects``)."""
+    clauses: list[Any] = [*stmt._where_criteria]
+    if stmt._having_criteria:
+        listed = _listed_selects(stmt)
+        for clause in stmt._having_criteria:
+            yield from (select for select in _top_selects(clause) if not _is_listed(select, listed))
     clauses += [
         onclause
         for _target, onclause, _from, _flags in stmt._setup_joins
@@ -1439,6 +1448,24 @@ def _nested_selects(stmt: Select[Any]) -> Any:
     ]
     for clause in clauses:
         yield from _top_selects(clause)
+
+
+def _listed_selects(stmt: Select[Any]) -> list[Any]:
+    """The SELECTs nested in the columns, ORDER BY and GROUP BY clauses of ``stmt``, which loader criteria filter
+    (see ``_SelectPlan.rewrites_nested``)."""
+    # A column that is a FROM element is an entity; its SELECT is its own FROM clause.
+    clauses = [
+        *(column for column in stmt._raw_columns if not isinstance(column, FromClause)),
+        *stmt._order_by_clauses,
+        *stmt._group_by_clauses,
+    ]
+    return [select for clause in clauses for select in _top_selects(clause)]
+
+
+def _is_listed(element: Any, listed: list[Any]) -> bool:
+    """Whether ``element``, a SELECT of a HAVING clause, is the same expression as one of ``listed``: PostgreSQL
+    matches HAVING to GROUP BY by expression, so they must render the same."""
+    return isinstance(element, (Select, CompoundSelect)) and any(element.compare(select) for select in listed)
 
 
 def _column_property_selects(mappers: list[Mapper[Any]]) -> list[Any]:
