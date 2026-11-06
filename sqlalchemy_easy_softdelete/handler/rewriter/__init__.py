@@ -9,7 +9,7 @@ import types
 from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, NamedTuple, cast
+from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
 import sqlalchemy
 from sqlalchemy import Column, Table, and_, exists, inspect, or_
@@ -41,7 +41,19 @@ from sqlalchemy.sql.visitors import InternalTraversal
 from sqlalchemy_easy_softdelete.hook import IgnoredTable
 
 # Type alias for statements we can rewrite
-Statement = Select[Any] | FromStatement[Any] | CompoundSelect[Any] | Executable | LambdaElement
+if TYPE_CHECKING:
+    from typing_extensions import TypeAlias, Unpack
+
+    # SQLAlchemy 2.1's statements take a type parameter for each column: these have any columns.
+    Statement: TypeAlias = (
+        Select[Unpack[tuple[Any, ...]]]
+        | FromStatement[Unpack[tuple[Any, ...]]]
+        | CompoundSelect[Unpack[tuple[Any, ...]]]
+        | Executable
+        | LambdaElement
+    )
+else:
+    Statement = Select | FromStatement | CompoundSelect | Executable | LambdaElement
 
 _ENCLOSING_FROMS: contextvars.ContextVar[frozenset[int]] = contextvars.ContextVar(
     "enclosing_froms", default=frozenset()
@@ -367,7 +379,7 @@ class SoftDeleteQueryRewriter:
             rewritten.closure_cache_key = rewritten.closure_cache_key + (self._lambda_cache_token,)
         return rewritten
 
-    def rewrite_select(self, stmt: Select[Any]) -> Select[Any]:
+    def rewrite_select(self, stmt: Select[Unpack[tuple[Any, ...]]]) -> Select[Unpack[tuple[Any, ...]]]:
         """Rewrite a Select Statement."""
         # if the user tagged this query with an execution_option to disable soft-delete filtering
         # simply return back the same stmt
@@ -382,7 +394,9 @@ class SoftDeleteQueryRewriter:
             setattr(rewritten, _FILTERED_MARK, True)
         return rewritten
 
-    def rewrite_compound_select(self, stmt: CompoundSelect[Any]) -> CompoundSelect[Any]:
+    def rewrite_compound_select(
+        self, stmt: CompoundSelect[Unpack[tuple[Any, ...]]]
+    ) -> CompoundSelect[Unpack[tuple[Any, ...]]]:
         """Rewrite a Compound Select Statement."""
         if self._is_disabled(stmt):
             return stmt
