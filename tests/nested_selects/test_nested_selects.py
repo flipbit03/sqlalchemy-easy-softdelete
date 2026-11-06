@@ -125,9 +125,10 @@ def test_lambda_statement_with_a_nested_select(db_session):
 
 
 def test_include_deleted_on_the_statement(db_session):
-    stmt = select(NSParent.id).where(NSParent.children.any()).execution_options(include_deleted=True)
+    for include_deleted in (True, False, True, False):
+        stmt = select(NSParent.id).where(NSParent.children.any()).execution_options(include_deleted=include_deleted)
 
-    assert _ids(db_session, stmt) == [1, 2, 4]
+        assert _ids(db_session, stmt) == ([1, 2, 4] if include_deleted else [1])
 
 
 def test_column_property(db_session):
@@ -139,7 +140,8 @@ def test_column_property(db_session):
 def test_column_property_that_includes_deleted_rows(db_session):
     parents = db_session.scalars(select(NSParent).order_by(NSParent.id))
 
-    assert [(parent.id, parent.every_child_count) for parent in parents] == [(1, 2), (2, 1), (3, 0)]
+    rows = [(parent.id, parent.child_count, parent.every_child_count) for parent in parents]
+    assert rows == [(1, 1, 2), (2, 0, 1), (3, 0, 0)]
 
 
 def test_column_property_selected_as_a_column(db_session):
@@ -162,3 +164,81 @@ def test_column_property_of_an_eager_or_lazy_loaded_class(db_session):
 
     db_session.expunge_all()
     assert db_session.get(NSOwner, 1).parent.child_count == 1
+
+
+def test_select_nested_in_the_columns_and_the_group_by_clause(db_session):
+    """PostgreSQL matches GROUP BY, and the ORDER BY of a DISTINCT statement, to the select list by expression."""
+    count = _children_count()
+    label = _children_count().label("n")
+
+    by_count = select(count, func.count(NSParent.id)).group_by(count).order_by(count)
+    by_label = select(label, func.count(NSParent.id)).group_by(label).order_by(label)
+    distinct = select(NSParent.id, count).distinct().order_by(count, NSParent.id)
+
+    assert db_session.execute(by_count).all() == [(0, 2), (1, 1)]
+    assert db_session.execute(by_label).all() == [(0, 2), (1, 1)]
+    assert db_session.execute(distinct).all() == [(2, 0), (3, 0), (1, 1)]
+
+
+def test_column_property_in_the_group_by_and_order_by_clauses(db_session):
+    grouped = (
+        select(NSParent.child_count, func.count(NSParent.id))
+        .group_by(NSParent.child_count)
+        .order_by(NSParent.child_count)
+    )
+    distinct = select(NSParent).distinct().order_by(NSParent.child_count, NSParent.id)
+
+    assert db_session.execute(grouped).all() == [(0, 2), (1, 1)]
+    assert [parent.id for parent in db_session.scalars(distinct)] == [2, 3, 1]
+
+
+def test_include_deleted_on_a_scalar_subquery_next_to_a_column_property(db_session):
+    rows = db_session.execute(select(NSParent, _children_count(include_deleted=True)).order_by(NSParent.id)).all()
+
+    assert [(parent.id, parent.child_count, every) for parent, every in rows] == [(1, 1, 2), (2, 0, 1), (3, 0, 0)]
+
+
+def test_include_deleted_on_a_select_nested_two_levels_deep(db_session):
+    """Parents with an owner whose parent has children, with and without the soft-deleted ones, taking turns."""
+    for include_deleted in (True, False, True, False):
+        children = select(NSChild.id).where(NSChild.parent_id == NSOwner.parent_id)
+        children = children.execution_options(include_deleted=True) if include_deleted else children
+        owners = select(NSOwner.id).where(NSOwner.parent_id == NSParent.id, exists(children))
+        owned = select(NSOwner.parent_id).where(exists(children)).subquery()
+
+        in_where = select(NSParent).where(exists(owners)).order_by(NSParent.id)
+        in_from = select(NSParent).join(owned, owned.c.parent_id == NSParent.id).order_by(NSParent.id)
+
+        expected = [1, 2] if include_deleted else [1]
+        assert [parent.id for parent in db_session.scalars(in_where)] == expected
+        assert [parent.id for parent in db_session.scalars(in_from)] == expected
+
+
+def test_uncorrelated_select_of_the_same_class(db_session):
+    """A nested SELECT with a single FROM does not correlate, even to a FROM of the statement around it."""
+    latest_child = select(func.max(NSChild.id)).group_by(NSChild.parent_id)
+    last_parent = select(func.max(NSParent.id)).scalar_subquery()
+
+    assert _ids(db_session, select(NSChild.id).where(NSChild.id.in_(latest_child))) == [1, 4]
+    assert _ids(db_session, select(NSParent.id).where(NSParent.id == last_parent)) == [3]
+
+
+def test_include_deleted_on_an_uncorrelated_select_of_the_same_class(db_session):
+    """Statements of the same shape with and without include_deleted on the nested SELECT, taking turns."""
+    for include_deleted in (True, False, True, False):
+        count = select(func.count(NSParent.id))
+        count = count.execution_options(include_deleted=True) if include_deleted else count
+        stmt = select(NSParent).where(NSParent.id + count.scalar_subquery() == 6)
+
+        assert [parent.id for parent in db_session.scalars(stmt)] == ([2] if include_deleted else [3])
+
+
+def test_select_with_a_join_nested_in_a_nested_select(db_session):
+    innermost = exists(select(NSParent.id).where(NSParent.id == NSChild.parent_id))
+    middle = (
+        select(NSChild.id)
+        .outerjoin(NSOwner, NSOwner.parent_id == NSChild.parent_id)
+        .where(NSChild.parent_id == NSParent.id, innermost)
+    )
+
+    assert _ids(db_session, select(NSParent.id).where(exists(middle))) == [1]
