@@ -1,8 +1,10 @@
 """``select(...).from_statement(union(...))`` executed through the session filters each member of the union,
 and honors ``include_deleted`` on the ``from_statement()`` and on each member."""
 
+from typing import Any
+
 import pytest
-from sqlalchemy import lambda_stmt, select, text, union, union_all
+from sqlalchemy import CompoundSelect, lambda_stmt, select, text, union, union_all
 from sqlalchemy.orm import Session
 
 from tests.default_config.model import SDChild, SDParent
@@ -79,7 +81,7 @@ TEXTUAL_CHILDREN = text("SELECT parent_id, id, deleted_at FROM sdchild WHERE par
 
 
 def test_union_with_a_textual_member_filters_the_other_members(seeded_session):
-    stmt = union_all(_member(1000), TEXTUAL_CHILDREN)
+    stmt: CompoundSelect[Any] = union_all(_member(1000), TEXTUAL_CHILDREN)
 
     ids = [row.id for row in seeded_session.execute(stmt)]
 

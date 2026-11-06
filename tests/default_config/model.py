@@ -30,10 +30,10 @@ class SoftDeleteMixin(
     # Optional: Add method stubs for delete/undelete for type checker support.
     # The actual implementations are provided by the generated mixin class.
     def delete(self, v: datetime | None = None) -> None:
-        super().delete(v)  # type: ignore[misc]
+        super().delete(v)
 
     def undelete(self) -> None:
-        super().undelete()  # type: ignore[misc]
+        super().undelete()
 
 
 class SDSimpleTable(TestModelBase, SoftDeleteMixin):
@@ -46,7 +46,7 @@ class SDSimpleTable(TestModelBase, SoftDeleteMixin):
 
 class SDParent(TestModelBase, SoftDeleteMixin):
     __tablename__ = "sdparent"
-    children: Mapped[list["SDChild"]] = relationship("SDChild", back_populates="parent")  # type: ignore[assignment]
+    children: Mapped[list["SDChild"]] = relationship("SDChild", back_populates="parent")
 
     def __repr__(self) -> str:
         return f"<{self.__class__.__name__} id={self.id} deleted={bool(self.deleted_at)}>"
@@ -55,8 +55,8 @@ class SDParent(TestModelBase, SoftDeleteMixin):
 class SDChild(TestModelBase, SoftDeleteMixin):
     __tablename__ = "sdchild"
     parent_id: Mapped[int] = mapped_column(Integer, ForeignKey("sdparent.id"), nullable=False)
-    parent: Mapped["SDParent"] = relationship("SDParent", back_populates="children")  # type: ignore[assignment]
-    child_children: Mapped[list["SDChildChild"]] = relationship("SDChildChild", back_populates="child")  # type: ignore[assignment]
+    parent: Mapped["SDParent"] = relationship("SDParent", back_populates="children")
+    child_children: Mapped[list["SDChildChild"]] = relationship("SDChildChild", back_populates="child")
 
     def __repr__(self) -> str:
         pid = f"(parent_id={self.parent_id})"
@@ -67,7 +67,7 @@ class SDChild(TestModelBase, SoftDeleteMixin):
 class SDChildChild(TestModelBase, SoftDeleteMixin):
     __tablename__ = "sdchildchild"
     child_id: Mapped[int] = mapped_column(Integer, ForeignKey("sdchild.id"), nullable=False)
-    child: Mapped["SDChild"] = relationship("SDChild", back_populates="child_children")  # type: ignore[assignment]
+    child: Mapped["SDChild"] = relationship("SDChild", back_populates="child_children")
 
     def __repr__(self) -> str:
         pid = f"(child_id={self.child_id})"

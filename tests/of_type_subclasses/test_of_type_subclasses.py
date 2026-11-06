@@ -22,7 +22,7 @@ DELETED = {2, 4, 6}
 hierarchies = pytest.mark.parametrize("hierarchy", HIERARCHIES.values(), ids=HIERARCHIES.keys())
 
 
-def _loaded_ids(session, option, attribute_name):  # type: ignore[no-untyped-def]
+def _loaded_ids(session, option, attribute_name):
     parent = session.scalars(select(OTParent).options(option)).unique().one()
     return [row.id for row in getattr(parent, attribute_name)]
 

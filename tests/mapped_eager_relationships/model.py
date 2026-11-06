@@ -76,7 +76,7 @@ class MEChildName(MEModelBase):
     __mapper_args__ = {"primary_key": [__table__.c.id]}
 
 
-MEParent.child_names = relationship(  # type: ignore[attr-defined]
+MEParent.child_names = relationship(
     MEChildName,
     primaryjoin=lambda: MEParent.id == foreign(child_names.c.parent_id),
     lazy="joined",
@@ -104,7 +104,7 @@ class MEArchive(MEModelBase, MESoftDeleteMixin):
     )
 
 
-MEParent.children_by_id = relationship(  # type: ignore[attr-defined]
+MEParent.children_by_id = relationship(
     child_ids,
     primaryjoin=lambda: MEParent.id == foreign(child_ids.parent_id),
     order_by=lambda: child_ids.id,

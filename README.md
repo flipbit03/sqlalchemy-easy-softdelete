@@ -51,10 +51,10 @@ class SoftDeleteMixin(
     # Optional: Add method stubs for delete/undelete for type checker support.
     # The actual implementations are provided by the generated mixin class.
     def delete(self, v: datetime | None = None) -> None:
-        super().delete(v)  # type: ignore[misc]
+        super().delete(v)
 
     def undelete(self) -> None:
-        super().undelete()  # type: ignore[misc]
+        super().undelete()
 
 # Apply the mixin to your Models
 class Base(DeclarativeBase):

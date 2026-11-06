@@ -13,7 +13,7 @@ from tests.nested_selects.model import NSChild, NSOwner, NSParent
 child_table = NSChild.__table__
 
 
-def _ids(session, stmt):  # type: ignore[no-untyped-def]
+def _ids(session, stmt):
     return sorted(session.scalars(stmt))
 
 

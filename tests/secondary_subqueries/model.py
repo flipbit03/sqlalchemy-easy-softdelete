@@ -67,7 +67,7 @@ def _grandchildren_through(secondary: Any) -> Relationship[Any]:
     )
 
 
-SSParent.grandchildren = _grandchildren_through(child_links)  # type: ignore[attr-defined]
-SSParent.grandchildren_by_rows = _grandchildren_through(child_rows)  # type: ignore[attr-defined]
+SSParent.grandchildren = _grandchildren_through(child_links)
+SSParent.grandchildren_by_rows = _grandchildren_through(child_rows)
 SSParent.all_grandchildren = _grandchildren_through(every_child)
-SSParent.grandchildren_by_nickname = _grandchildren_through(child_nicknames)  # type: ignore[attr-defined]
+SSParent.grandchildren_by_nickname = _grandchildren_through(child_nicknames)
