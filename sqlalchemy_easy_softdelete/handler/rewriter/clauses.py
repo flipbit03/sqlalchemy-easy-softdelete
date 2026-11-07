@@ -1,5 +1,4 @@
-"""Helpers over SQLAlchemy clauses and FROM elements, and the workarounds for differences between SQLAlchemy
-releases (see each function)."""
+"""Helpers over SQLAlchemy clauses and FROM elements."""
 
 from __future__ import annotations
 

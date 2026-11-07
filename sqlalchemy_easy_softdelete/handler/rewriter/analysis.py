@@ -1,5 +1,5 @@
 """Reading a statement: its FROM clause, the classes eager loading and the mapping load, soft-deletable
-secondaries, outer joins, and nested SELECTs. Nothing here builds a statement."""
+secondaries, outer joins, and nested SELECTs."""
 
 from __future__ import annotations
 
