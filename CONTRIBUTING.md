@@ -2,6 +2,8 @@
 
 Thank you for your interest in contributing!
 
+How the query rewriter is organized is described in [ARCHITECTURE.md](ARCHITECTURE.md).
+
 ## Development Setup
 
 ### Prerequisites

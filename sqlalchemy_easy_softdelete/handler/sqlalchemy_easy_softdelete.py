@@ -8,8 +8,7 @@ from sqlalchemy.sql import Executable
 
 from sqlalchemy_easy_softdelete.handler.rewriter import (
     DEFAULT_REWRITE_CACHE_SIZE,
-    LOAD_PATH,
-    RELATIONSHIP_LOAD,
+    RewriteContext,
     SoftDeleteQueryRewriter,
 )
 from sqlalchemy_easy_softdelete.hook import IgnoredTable
@@ -50,14 +49,12 @@ def activate_soft_delete_hook(
         if state.execution_options.get(disable_soft_delete_option_name):
             return
 
-        # Rewrite the statement (closure captures local `rewriter`)
-        token = RELATIONSHIP_LOAD.set(state.is_relationship_load)
-        path_token = LOAD_PATH.set(state.loader_strategy_path if state.is_relationship_load else None)
-        try:
-            adapted = rewriter.rewrite_statement(state.statement)
-        finally:
-            LOAD_PATH.reset(path_token)
-            RELATIONSHIP_LOAD.reset(token)
+        # Rewrite the statement (closure captures local `rewriter`), as the execution's own: a relationship load
+        # selects its parent rows by primary key, along its loader path.
+        context = RewriteContext.root(
+            state.is_relationship_load, state.loader_strategy_path if state.is_relationship_load else None
+        )
+        adapted = rewriter.rewrite_statement(state.statement, context)
 
         # Replace the statement
         # Cast needed because Statement type includes LambdaElement which mypy
