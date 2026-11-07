@@ -9,12 +9,19 @@ from sqlalchemy.sql import CompoundSelect, Executable, Select
 from sqlalchemy.sql.lambdas import LambdaElement
 from sqlalchemy.sql.selectable import SelectBase, SelectStatementGrouping
 
-from sqlalchemy_easy_softdelete.handler.rewriter.context import LOAD_PATH, RELATIONSHIP_LOAD, ROOT, RewriteContext
-from sqlalchemy_easy_softdelete.handler.rewriter.plan import DEFAULT_REWRITE_CACHE_SIZE, PlanCache, RewriteCacheInfo
+from sqlalchemy_easy_softdelete.handler.rewriter.clauses import FILTERED_MARK
+from sqlalchemy_easy_softdelete.handler.rewriter.plan import (
+    DEFAULT_REWRITE_CACHE_SIZE,
+    LOAD_PATH,
+    RELATIONSHIP_LOAD,
+    ROOT,
+    PlanCache,
+    RewriteCacheInfo,
+    RewriteContext,
+)
 from sqlalchemy_easy_softdelete.handler.rewriter.planner import plan_for
 from sqlalchemy_easy_softdelete.handler.rewriter.policy import SoftDeletePolicy
-from sqlalchemy_easy_softdelete.handler.rewriter.sa import internals
-from sqlalchemy_easy_softdelete.handler.rewriter.transform.apply import apply_plan
+from sqlalchemy_easy_softdelete.handler.rewriter.transform import apply_plan
 from sqlalchemy_easy_softdelete.hook import IgnoredTable
 
 # Type alias for statements we can rewrite
@@ -90,10 +97,18 @@ class SoftDeleteQueryRewriter:
         """The name of the soft-delete field."""
         return self.policy.deleted_field_name
 
+    @deleted_field_name.setter
+    def deleted_field_name(self, deleted_field_name: str) -> None:
+        self.policy.deleted_field_name = deleted_field_name
+
     @property
     def disable_soft_delete_option_name(self) -> str:
         """The execution option that disables soft-delete filtering."""
         return self.policy.disable_soft_delete_option_name
+
+    @disable_soft_delete_option_name.setter
+    def disable_soft_delete_option_name(self, disable_soft_delete_option_name: str) -> None:
+        self.policy.disable_soft_delete_option_name = disable_soft_delete_option_name
 
     @property
     def ignored_tables(self) -> list[IgnoredTable]:
@@ -113,7 +128,7 @@ class SoftDeleteQueryRewriter:
     def rewrite_statement(self, stmt: Statement, context: RewriteContext | None = None) -> Statement:
         """Rewrite a single SQL-like Statement."""
         if context is None:
-            # The compatibility variables (see RewriteContext.ambient), read here: this is every rewrite's way in.
+            # As RewriteContext.ambient(), inlined: every rewrite comes in here.
             relationship_load, load_path = RELATIONSHIP_LOAD.get(), LOAD_PATH.get()
             context = (
                 ROOT if not relationship_load and load_path is None else RewriteContext(relationship_load, load_path)
@@ -150,7 +165,7 @@ class SoftDeleteQueryRewriter:
             return stmt
         if element is stmt.element:
             return stmt
-        rewritten: FromStatement[Any] = internals.generate(stmt)
+        rewritten: FromStatement[Any] = stmt._generate()
         rewritten.element = element
         return rewritten
 
@@ -167,7 +182,7 @@ class SoftDeleteQueryRewriter:
         if context is None:
             context = RewriteContext.ambient()
         # Get the resolved statement - this is the actual Select/CompoundSelect
-        resolved = internals.resolved(stmt)
+        resolved = getattr(stmt, "_resolved", stmt)
 
         # Rewrite based on the type of the resolved statement
         rewritten_resolved: Any
@@ -182,8 +197,16 @@ class SoftDeleteQueryRewriter:
 
         if rewritten_resolved is resolved:
             return stmt
-        # The rewrite only adds IS NULL criteria, so the lambda's bound parameters stay the statement's parameters.
-        return internals.lambda_with_statement(stmt, rewritten_resolved, self._lambda_cache_token)  # type: ignore[no-any-return]
+        rewritten = stmt._clone()
+        rewritten._resolved = rewritten_resolved
+        # SQLAlchemy caches the compiled form of a lambda statement by the lambda's code and closure,
+        # not by its resulting statement, so the copy would share the compiled form of the statement
+        # without soft-delete filtering (from a Core execution of the same lambda, which this hook does
+        # not rewrite). This rewriter's token in the cache key keeps the two apart. The rewrite only
+        # adds IS NULL criteria, so the lambda's bound parameters stay the statement's parameters.
+        if isinstance(rewritten.closure_cache_key, tuple):
+            rewritten.closure_cache_key = rewritten.closure_cache_key + (self._lambda_cache_token,)
+        return rewritten
 
     def rewrite_select(
         self, stmt: Select[Unpack[tuple[Any, ...]]], context: RewriteContext | None = None
@@ -201,7 +224,7 @@ class SoftDeleteQueryRewriter:
         if rewritten is not stmt and context.enclosing_froms:
             # A nested SELECT, filtered here: the loader criteria leave it out, so that it renders as the same
             # expression filtered by them does (in GROUP BY), not filtered twice.
-            internals.mark_filtered(rewritten)
+            setattr(rewritten, FILTERED_MARK, True)
         return rewritten  # type: ignore[no-any-return]
 
     def rewrite_compound_select(
@@ -220,9 +243,9 @@ class SoftDeleteQueryRewriter:
             selects.append(self._rewrite_compound_member(select, member_context))
         if all(new is old for new, old in zip(selects, stmt.selects)):
             return stmt
-        rewritten = internals.generate(stmt)
+        rewritten = stmt._generate()
         rewritten.selects = selects
-        return rewritten  # type: ignore[no-any-return]
+        return rewritten
 
     def _rewrite_compound_member(self, member: Any, context: RewriteContext) -> Any:
         """Rewrite one SELECT of a union: a SELECT or a nested union, possibly in parentheses (a member

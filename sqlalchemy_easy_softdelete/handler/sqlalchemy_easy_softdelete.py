@@ -11,7 +11,6 @@ from sqlalchemy_easy_softdelete.handler.rewriter import (
     RewriteContext,
     SoftDeleteQueryRewriter,
 )
-from sqlalchemy_easy_softdelete.handler.rewriter.sa import internals
 from sqlalchemy_easy_softdelete.hook import IgnoredTable
 
 
@@ -38,7 +37,9 @@ def activate_soft_delete_hook(
         # Before SQLAlchemy 2.0.30, is_select is False for select(...).from_statement(...), also inside a
         # lambda_stmt(). The rewriter leaves a from_statement() of INSERT/UPDATE/DELETE ... RETURNING or
         # of textual SQL as it is.
-        if not state.is_select and not isinstance(internals.resolved(state.statement), FromStatement):
+        if not state.is_select and not isinstance(
+            getattr(state.statement, "_resolved", state.statement), FromStatement
+        ):
             return
 
         # The option can also be given at execution time (Session.execute(..., execution_options=...),

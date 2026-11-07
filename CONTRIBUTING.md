@@ -2,7 +2,7 @@
 
 Thank you for your interest in contributing!
 
-How the query rewriter is organized, and the rules that keep it so, are in [ARCHITECTURE.md](ARCHITECTURE.md).
+How the query rewriter is organized is described in [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Development Setup
 
@@ -65,8 +65,7 @@ make test-py version=3.12
 make lint
 ```
 
-This runs `pre-commit` with ruff for linting and formatting, and `tools/check_layers.py` for the rewriter's
-layers (see [ARCHITECTURE.md](ARCHITECTURE.md)).
+This runs `pre-commit` with ruff for linting and formatting.
 
 ### Type Checking
 

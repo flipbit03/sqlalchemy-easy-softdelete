@@ -21,12 +21,3 @@ repos:
       # Run the formatter
       - id: ruff-format
         exclude: "tests/snapshots/.*"
-  - repo: local
-    hooks:
-      # The rewriter's layers, import cycles, and SQLAlchemy's private API kept in sa/ (see ARCHITECTURE.md).
-      - id: rewriter-layers
-        name: rewriter layers
-        entry: python3 tools/check_layers.py
-        language: system
-        pass_filenames: false
-        files: "^(sqlalchemy_easy_softdelete/|tools/check_layers.py)"

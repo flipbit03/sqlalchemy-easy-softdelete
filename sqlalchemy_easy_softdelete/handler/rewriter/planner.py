@@ -9,33 +9,41 @@ from sqlalchemy import Column
 from sqlalchemy.sql import Alias, Select
 from sqlalchemy.sql.selectable import FromClause, Lateral
 
-from sqlalchemy_easy_softdelete.handler.rewriter.analysis.eager import (
-    eager_loaded_entities,
-    keep_criteria_off_unfilterable_aliases,
-)
-from sqlalchemy_easy_softdelete.handler.rewriter.analysis.froms import (
+from sqlalchemy_easy_softdelete.handler.rewriter.analysis import (
     FromScan,
     collect_from,
-    implicit_join_lefts,
-    joins_to_without_its_columns,
-)
-from sqlalchemy_easy_softdelete.handler.rewriter.analysis.nested import (
     correlated_froms,
+    eager_loaded_entities,
     froms_without_criteria,
     holds_selects,
-    nested_selects,
-)
-from sqlalchemy_easy_softdelete.handler.rewriter.analysis.outer_joins import outer_joins, refers_to_statement_objects
-from sqlalchemy_easy_softdelete.handler.rewriter.analysis.secondary import (
+    implicit_join_lefts,
     joined_secondary_options,
+    joins_to_without_its_columns,
+    keep_criteria_off_unfilterable_aliases,
+    nested_selects,
+    outer_joins,
+    refers_to_statement_objects,
     reusable_options,
     secondary_criteria,
 )
-from sqlalchemy_easy_softdelete.handler.rewriter.context import RewriteContext, Rewriter
-from sqlalchemy_easy_softdelete.handler.rewriter.plan import Criteria, FromAnalysis, PlanCache, Reason, SelectPlan
-from sqlalchemy_easy_softdelete.handler.rewriter.sa import internals
-from sqlalchemy_easy_softdelete.handler.rewriter.sa.clauses import cte_root, plain, subquery_in, ungrouped
-from sqlalchemy_easy_softdelete.handler.rewriter.transform.copies import filtered_copy
+from sqlalchemy_easy_softdelete.handler.rewriter.clauses import (
+    cte_lineage,
+    cte_root,
+    final_froms_without_loader_options,
+    plain,
+    subquery_in,
+    ungrouped,
+)
+from sqlalchemy_easy_softdelete.handler.rewriter.plan import (
+    Criteria,
+    FromAnalysis,
+    PlanCache,
+    Reason,
+    RewriteContext,
+    Rewriter,
+    SelectPlan,
+)
+from sqlalchemy_easy_softdelete.handler.rewriter.transform import filtered_copy
 
 
 def plan_for(
@@ -52,10 +60,10 @@ def plan_for(
     if cache is not None:
         if context.enclosing_froms:
             # A nested SELECT's plan depends on what it correlates to: it is remembered by the key of the
-            # statement it is nested in and its place there (see transform.nested).
+            # statement it is nested in and its place there (see rewrite_nested_selects).
             key = context.nested_key
         else:
-            cache_key = internals.cache_key(stmt)
+            cache_key = stmt._generate_cache_key()
             # A relationship load's plan leaves out aliases of tables (see RewriteContext.relationship_load).
             key = (context.relationship_load, cache_key.key) if cache_key is not None else None
     if cache is not None and key is not None:
@@ -118,11 +126,10 @@ def plan_select(rewriter: Rewriter, stmt: Select[Any], context: RewriteContext) 
 
 
 def _own_froms(stmt: Select[Any], context: RewriteContext) -> tuple[list[Any], bool]:
-    """The FROM elements SQLAlchemy finds for ``stmt``, but those it correlates to when nested, and whether it has
-    more than one (see ``SelectPlan.many_froms``)."""
+    """The FROM elements of ``stmt`` but those it correlates to, and whether it has more than one."""
     enclosing = context.enclosing_froms
     try:
-        final_froms = list(internals.final_froms_without_loader_options(stmt))
+        final_froms = list(final_froms_without_loader_options(stmt))
     except sqlalchemy.exc.InvalidRequestError:
         # A nested SELECT, on its own: one nested in its criteria may correlate to all of its FROM elements,
         # which SQLAlchemy 2.1 refuses there. Its FROM elements are those without its criteria, and theirs.
@@ -137,8 +144,7 @@ def _own_froms(stmt: Select[Any], context: RewriteContext) -> tuple[list[Any], b
 
 
 def _eager_criteria(rewriter: Rewriter, stmt: Select[Any], context: RewriteContext, reasons: list[Reason]) -> Criteria:
-    """The classes eager loading, the mapping and the statement's listed SELECTs load, which loader criteria
-    filter (see ``analysis.eager``)."""
+    """The classes loader criteria filter: those of eager loading, the mapping and the listed SELECTs."""
     eager_entities, eager_reasons, mapped_aliases = eager_loaded_entities(rewriter.policy, stmt)
     reasons.extend(eager_reasons)
     # Eager loading joins aliases of the loaded classes: their filter applies to aliased() forms.
@@ -152,12 +158,11 @@ def _eager_criteria(rewriter: Rewriter, stmt: Select[Any], context: RewriteConte
 def _subqueries_to_copy(
     from_subqueries: list[FromClause], context: RewriteContext, reasons: list[Reason]
 ) -> dict[int, FromClause]:
-    """The subqueries of the FROM clause that get a filtered copy, by id: not a CTE of the statement the SELECT is
-    nested in, nor a recursive CTE's reference to itself."""
+    """The subqueries of the FROM clause that get a filtered copy, by id."""
     found: dict[int, FromClause] = {}
     for from_obj in from_subqueries:
         plain_from = plain(from_obj)
-        if context.enclosing_froms and internals.cte_lineage(subquery_in(plain_from)) & context.enclosing_froms:
+        if context.enclosing_froms and cte_lineage(subquery_in(plain_from)) & context.enclosing_froms:
             # A CTE of an enclosing statement (or an alias of one), in a nested SELECT: the enclosing statement's
             # filtered copy restates it, and SQLAlchemy renders that copy once for every reference.
             reasons.append(Reason.CTE_OF_ENCLOSING)
@@ -179,8 +184,7 @@ def _placed_subqueries(
     context: RewriteContext,
     reasons: list[Reason],
 ) -> tuple[list[FromClause], dict[int, Any]]:
-    """The subqueries the copies replace, as the statement names them, and the left sides of its joins that a copy
-    joining its FROM list would change (see ``FromAnalysis``)."""
+    """The subqueries the copies replace, and the join left sides a copy would change (see ``FromAnalysis``)."""
     if scan.subqueries.keys() != found.keys():
         # A later statement of this shape would not find its subqueries without this analysis.
         reasons.append(Reason.UNREAD_SUBQUERIES)
@@ -214,8 +218,7 @@ def _placed_subqueries(
 def _filtered_table_aliases(
     rewriter: Rewriter, from_aliases: list[Alias], scan: FromScan, reasons: list[Reason]
 ) -> list[Alias]:
-    """The aliases of soft-deletable tables in the FROM clause that the statement names, each filtered on its own
-    soft-delete column."""
+    """The aliases of soft-deletable tables the statement names, each filtered on its own soft-delete column."""
     found_aliases = {id(plain(alias)) for alias in from_aliases}
     if any(key not in found_aliases for key in scan.table_aliases):
         # The scan finds an alias the FROM clause does not hold: it cannot stand in for the analysis.
