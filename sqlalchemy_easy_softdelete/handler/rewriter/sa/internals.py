@@ -23,7 +23,7 @@ before 2.0.32                  ``Select.compare()`` raises ``TypeError`` compari
 from __future__ import annotations
 
 from collections.abc import Callable
-from operator import attrgetter
+from operator import attrgetter, methodcaller
 from typing import Any
 
 from sqlalchemy import inspect
@@ -59,31 +59,42 @@ def extra_criteria(loader: Any) -> tuple[Any, ...]:
     return tuple(getattr(loader, "_extra_criteria", ()))
 
 
-_PARTS = {
-    "raw_columns": "_raw_columns",
-    "from_list": "_from_obj",
-    "joins": "_setup_joins",
-    "where_criteria": "_where_criteria",
-    "having_criteria": "_having_criteria",
-    "order_by": "_order_by_clauses",
-    "group_by": "_group_by_clauses",
-    "set_aside_entities": "_memoized_select_entities",
-    "loader_options": "_with_options",
-}
-
-
-def copy_statement(stmt: Any, **parts: Any) -> Any:
-    """A copy of ``stmt`` (a SELECT) with ``parts`` replaced, by the names of the readers above. The copy is the
-    caller's own: replacing its parts changes nothing else."""
+def copy_statement(
+    stmt: Any,
+    *,
+    raw_columns: Any = None,
+    from_list: Any = None,
+    joins: Any = None,
+    where_criteria: Any = None,
+    having_criteria: Any = None,
+    order_by: Any = None,
+    group_by: Any = None,
+    set_aside_entities: Any = None,
+) -> Any:
+    """A copy of ``stmt`` (a SELECT) with the parts given (not None) replaced; see the readers above. The copy is
+    the caller's own: replacing its parts changes nothing else."""
     copy = stmt._generate()
-    for name, value in parts.items():
-        setattr(copy, _PARTS[name], value)
+    if raw_columns is not None:
+        copy._raw_columns = raw_columns
+    if from_list is not None:
+        copy._from_obj = from_list
+    if joins is not None:
+        copy._setup_joins = joins
+    if where_criteria is not None:
+        copy._where_criteria = where_criteria
+    if having_criteria is not None:
+        copy._having_criteria = having_criteria
+    if order_by is not None:
+        copy._order_by_clauses = order_by
+    if group_by is not None:
+        copy._group_by_clauses = group_by
+    if set_aside_entities is not None:
+        copy._memoized_select_entities = set_aside_entities
     return copy
 
 
-def generate(stmt: Any) -> Any:
-    """A copy of a statement (a union, a ``from_statement()``) whose public attributes the caller then sets."""
-    return stmt._generate()
+generate: Callable[[Any], Any] = methodcaller("_generate")
+"""A copy of a statement (a union, a ``from_statement()``) whose public attributes the caller then sets."""
 
 
 def with_joins(entities: Any, new_joins: Any) -> Any:
@@ -93,9 +104,8 @@ def with_joins(entities: Any, new_joins: Any) -> Any:
     return copy
 
 
-def cache_key(stmt: Any) -> Any:
-    """The statement's cache key, or None when it has none."""
-    return stmt._generate_cache_key()
+cache_key: Callable[[Any], Any] = methodcaller("_generate_cache_key")
+"""The statement's cache key, or None when it has none."""
 
 
 def final_froms_without_loader_options(stmt: Any) -> Any:
@@ -126,14 +136,11 @@ def annotations_of(element: Any) -> Any:
     return getattr(element, "_annotations", {})
 
 
-def deannotate(element: Any) -> Any:
-    """``element`` without the ORM's annotations: the object the statement was built with."""
-    return element._deannotate()
+deannotate: Callable[[Any], Any] = methodcaller("_deannotate")
+"""``element`` without the ORM's annotations: the object the statement was built with."""
 
-
-def from_objects(element: Any) -> Any:
-    """The FROM elements an element (a column, a criterion) refers to."""
-    return element._from_objects
+from_objects: Callable[[Any], Any] = attrgetter("_from_objects")
+"""The FROM elements an element (a column, a criterion) refers to."""
 
 
 def is_clone_of(element: Any) -> Any:
@@ -141,13 +148,10 @@ def is_clone_of(element: Any) -> Any:
     return getattr(element, "_is_clone_of", None)
 
 
-def clone(element: Any) -> Any:
-    return element._clone()
+clone: Callable[[Any], Any] = methodcaller("_clone")
 
-
-def of_type(attribute: Any) -> Any:
-    """The ``of_type()`` entity of a relationship attribute, or None."""
-    return attribute._of_type
+of_type: Callable[[Any], Any] = attrgetter("_of_type")
+"""The ``of_type()`` entity of a relationship attribute, or None."""
 
 
 def resolved(stmt: Any) -> Any:
@@ -177,9 +181,8 @@ def execution_option(stmt: Any, name: str) -> Any:
 # --- CTEs and copies of subqueries -------------------------------------------------------------------------------
 
 
-def cte_alias(cte: Any) -> Any:
-    """The CTE an alias of a CTE (``cte.alias()``) is an alias of, or None."""
-    return cte._cte_alias
+cte_alias: Callable[[Any], Any] = attrgetter("_cte_alias")
+"""The CTE an alias of a CTE (``cte.alias()``) is an alias of, or None."""
 
 
 def restates(element: Any) -> Any:

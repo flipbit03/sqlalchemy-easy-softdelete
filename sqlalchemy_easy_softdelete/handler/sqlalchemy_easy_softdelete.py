@@ -50,9 +50,8 @@ def activate_soft_delete_hook(
 
         # Rewrite the statement (closure captures local `rewriter`), as the execution's own: a relationship load
         # selects its parent rows by primary key, along its loader path.
-        context = RewriteContext(
-            relationship_load=state.is_relationship_load,
-            load_path=state.loader_strategy_path if state.is_relationship_load else None,
+        context = RewriteContext.root(
+            state.is_relationship_load, state.loader_strategy_path if state.is_relationship_load else None
         )
         adapted = rewriter.rewrite_statement(state.statement, context)
 

@@ -137,16 +137,15 @@ class _CopyPlacer:
         self.placed: set[int] = set()
 
     def place(self, stmt: Select[Any]) -> Any:
-        parts: dict[str, Any] = {
-            "raw_columns": list(self._place_in_all(internals.raw_columns(stmt))),
-            "where_criteria": self._place_in_all(internals.where_criteria(stmt)),
-            "having_criteria": self._place_in_all(internals.having_criteria(stmt)),
-            "order_by": self._place_in_all(internals.order_by(stmt)),
-            "group_by": self._place_in_all(internals.group_by(stmt)),
-            "from_list": tuple(self._swap_from(from_obj) for from_obj in internals.from_list(stmt)),
-            "joins": self._swap_joins(internals.joins(stmt)),
-        }
-        set_aside = internals.set_aside_entities(stmt)
+        # In this order: placing a copy marks it placed, and the copies left join the FROM list.
+        raw_columns = list(self._place_in_all(internals.raw_columns(stmt)))
+        where_criteria = self._place_in_all(internals.where_criteria(stmt))
+        having_criteria = self._place_in_all(internals.having_criteria(stmt))
+        order_by = self._place_in_all(internals.order_by(stmt))
+        group_by = self._place_in_all(internals.group_by(stmt))
+        from_list = tuple(self._swap_from(from_obj) for from_obj in internals.from_list(stmt))
+        joins = self._swap_joins(internals.joins(stmt))
+        set_aside: Any = internals.set_aside_entities(stmt)
         if set_aside:
             # with_only_columns() sets the statement's earlier joins aside.
             memoized = []
@@ -156,12 +155,24 @@ class _CopyPlacer:
                 if new_joins is not entity_joins:
                     entities = internals.with_joins(entities, new_joins)
                 memoized.append(entities)
-            parts["set_aside_entities"] = tuple(memoized)
+            set_aside = tuple(memoized)
+        else:
+            set_aside = None
         unplaced = tuple(copy for key, copy in self.copies.items() if key not in self.placed)
         if unplaced:
-            parts["from_list"] = parts["from_list"] + unplaced
+            from_list = from_list + unplaced
         # The new statement is this function's own copy: setting its parts modifies nothing else.
-        return internals.copy_statement(stmt, **parts)
+        return internals.copy_statement(
+            stmt,
+            raw_columns=raw_columns,
+            where_criteria=where_criteria,
+            having_criteria=having_criteria,
+            order_by=order_by,
+            group_by=group_by,
+            from_list=from_list,
+            joins=joins,
+            set_aside_entities=set_aside,
+        )
 
     def _copy_of(self, from_obj: Any) -> Any:
         if from_obj is None:

@@ -9,7 +9,7 @@ from sqlalchemy.sql import CompoundSelect, Executable, Select
 from sqlalchemy.sql.lambdas import LambdaElement
 from sqlalchemy.sql.selectable import SelectBase, SelectStatementGrouping
 
-from sqlalchemy_easy_softdelete.handler.rewriter.context import RewriteContext
+from sqlalchemy_easy_softdelete.handler.rewriter.context import LOAD_PATH, RELATIONSHIP_LOAD, ROOT, RewriteContext
 from sqlalchemy_easy_softdelete.handler.rewriter.plan import DEFAULT_REWRITE_CACHE_SIZE, PlanCache, RewriteCacheInfo
 from sqlalchemy_easy_softdelete.handler.rewriter.planner import plan_for
 from sqlalchemy_easy_softdelete.handler.rewriter.policy import SoftDeletePolicy
@@ -113,7 +113,11 @@ class SoftDeleteQueryRewriter:
     def rewrite_statement(self, stmt: Statement, context: RewriteContext | None = None) -> Statement:
         """Rewrite a single SQL-like Statement."""
         if context is None:
-            context = RewriteContext.ambient()
+            # The compatibility variables (see RewriteContext.ambient), read here: this is every rewrite's way in.
+            relationship_load, load_path = RELATIONSHIP_LOAD.get(), LOAD_PATH.get()
+            context = (
+                ROOT if not relationship_load and load_path is None else RewriteContext(relationship_load, load_path)
+            )
         if isinstance(stmt, Select):
             return self.rewrite_select(stmt, context)
 

@@ -8,8 +8,7 @@ passes a derived context to the next one.
 from __future__ import annotations
 
 import contextvars
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, NamedTuple, Protocol
 
 if TYPE_CHECKING:
     from sqlalchemy_easy_softdelete.handler.rewriter.policy import SoftDeletePolicy
@@ -25,9 +24,13 @@ LOAD_PATH: contextvars.ContextVar[Any] = contextvars.ContextVar("load_path", def
 _NO_FROMS: frozenset[int] = frozenset()
 
 
-@dataclass(frozen=True)
-class RewriteContext:
-    """Where the statement being rewritten sits. The root context of an execution comes from the hook."""
+class RewriteContext(NamedTuple):
+    """Where the statement being rewritten sits. The root context of an execution comes from the hook.
+
+    It is immutable: each level of a rewrite derives its own. A named tuple, because one is made for each statement
+    the recursion reaches, and it costs a fraction of a frozen dataclass to make; most rewrites share one root
+    context, ``ROOT``.
+    """
 
     relationship_load: bool = False
     """Whether the statement being rewritten loads a relationship (from ``ORMExecuteState.is_relationship_load``).
@@ -62,9 +65,16 @@ class RewriteContext:
     statement, the references to the CTE itself are left as they are."""
 
     @classmethod
+    def root(cls, relationship_load: bool = False, load_path: Any = None) -> RewriteContext:
+        """The context of an execution's statement: ``ROOT`` unless it is a relationship load."""
+        if not relationship_load and load_path is None:
+            return ROOT
+        return cls(relationship_load, load_path)
+
+    @classmethod
     def ambient(cls) -> RewriteContext:
         """The root context of a ``rewrite_statement()`` call that gives none: from the compatibility variables."""
-        return cls(relationship_load=RELATIONSHIP_LOAD.get(), load_path=LOAD_PATH.get())
+        return cls.root(RELATIONSHIP_LOAD.get(), LOAD_PATH.get())
 
     def nested_in(self, froms: frozenset[int], memo: dict[int, Any]) -> RewriteContext:
         """For the SELECTs nested in a statement whose FROM elements are ``froms`` and whose copies are ``memo``."""
@@ -120,6 +130,10 @@ class RewriteContext:
             self.in_lateral,
             self.ctes_in_rewrite | ids,
         )
+
+
+ROOT = RewriteContext()
+"""The context of a statement that is not a relationship load, rewritten as one of its own."""
 
 
 class Rewriter(Protocol):
