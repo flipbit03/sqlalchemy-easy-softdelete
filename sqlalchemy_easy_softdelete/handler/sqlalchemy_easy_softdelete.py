@@ -8,10 +8,10 @@ from sqlalchemy.sql import Executable
 
 from sqlalchemy_easy_softdelete.handler.rewriter import (
     DEFAULT_REWRITE_CACHE_SIZE,
-    LOAD_PATH,
-    RELATIONSHIP_LOAD,
+    RewriteContext,
     SoftDeleteQueryRewriter,
 )
+from sqlalchemy_easy_softdelete.handler.rewriter.sa import internals
 from sqlalchemy_easy_softdelete.hook import IgnoredTable
 
 
@@ -38,9 +38,7 @@ def activate_soft_delete_hook(
         # Before SQLAlchemy 2.0.30, is_select is False for select(...).from_statement(...), also inside a
         # lambda_stmt(). The rewriter leaves a from_statement() of INSERT/UPDATE/DELETE ... RETURNING or
         # of textual SQL as it is.
-        if not state.is_select and not isinstance(
-            getattr(state.statement, "_resolved", state.statement), FromStatement
-        ):
+        if not state.is_select and not isinstance(internals.resolved(state.statement), FromStatement):
             return
 
         # The option can also be given at execution time (Session.execute(..., execution_options=...),
@@ -50,14 +48,13 @@ def activate_soft_delete_hook(
         if state.execution_options.get(disable_soft_delete_option_name):
             return
 
-        # Rewrite the statement (closure captures local `rewriter`)
-        token = RELATIONSHIP_LOAD.set(state.is_relationship_load)
-        path_token = LOAD_PATH.set(state.loader_strategy_path if state.is_relationship_load else None)
-        try:
-            adapted = rewriter.rewrite_statement(state.statement)
-        finally:
-            LOAD_PATH.reset(path_token)
-            RELATIONSHIP_LOAD.reset(token)
+        # Rewrite the statement (closure captures local `rewriter`), as the execution's own: a relationship load
+        # selects its parent rows by primary key, along its loader path.
+        context = RewriteContext(
+            relationship_load=state.is_relationship_load,
+            load_path=state.loader_strategy_path if state.is_relationship_load else None,
+        )
+        adapted = rewriter.rewrite_statement(state.statement, context)
 
         # Replace the statement
         # Cast needed because Statement type includes LambdaElement which mypy
