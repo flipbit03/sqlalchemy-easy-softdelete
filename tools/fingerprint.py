@@ -34,9 +34,9 @@ def compare(base: Path, candidate: Path) -> int:
     candidate_lines = candidate.read_text().splitlines()
     differing = [(index, old, new) for index, (old, new) in enumerate(zip(base_lines, candidate_lines)) if old != new]
     if not differing and len(base_lines) == len(candidate_lines):
-        print(f"identical: {len(base_lines)} rewrites")
+        print(f"identical: {len(base_lines)} records")
         return 0
-    print(f"DIFFERENT: {len(base_lines)} vs {len(candidate_lines)} rewrites, {len(differing)} records differ")
+    print(f"DIFFERENT: {len(base_lines)} vs {len(candidate_lines)} records, {len(differing)} differ")
     for index, old, new in differing[:5]:
         old_record, new_record = json.loads(old), json.loads(new)
         fields = [key for key in old_record if old_record.get(key) != new_record.get(key)]
